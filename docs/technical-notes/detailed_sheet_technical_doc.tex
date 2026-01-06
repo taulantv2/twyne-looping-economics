@@ -1,0 +1,571 @@
+\documentclass[11pt,a4paper]{article}
+
+% Packages
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+
+\geometry{margin=1in}
+
+% Custom commands
+\newcommand{\liqltv}{\lambda^{\text{liq}}}
+\newcommand{\liqltvaave}{\lambda^{\text{liq,Aave}}}
+\newcommand{\liqltvcpl}{\lambda^{\text{liq,CLP}}}
+\newcommand{\twyneltv}{\tilde{\lambda}_t}
+\newcommand{\twynemax}{\tilde{\lambda}_t^{\max}}
+\newcommand{\extltv}{\tilde{\lambda}_e}
+\newcommand{\clpltv}{\tilde{\lambda}_e^{\text{CLP}}}
+\newcommand{\borrowltv}{\tilde{\lambda}_e^{C}}
+\newcommand{\safetybuffer}{\beta_{\text{safe}}}
+\newcommand{\healthfactor}{\text{HF}}
+\newcommand{\utilization}{u}
+
+\title{\textbf{Technical Documentation: Detailed Sheet}\\[0.5em]
+\large Twyne stETH-ETH Boosted Looping Economics Model}
+\author{Twyne Protocol}
+\date{January 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This document provides a comprehensive technical description of the ``Detailed Sheet'' in the Boosted Looping Economics spreadsheet. It describes all input parameters, calculated quantities, and the mathematical formulas governing the economics of leveraged stETH-ETH yield farming positions using the Twyne credit delegation protocol. This document is intended as a companion to the Twyne V1 Whitepaper and assumes familiarity with the concepts therein.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%==============================================================================
+\section{Introduction}
+%==============================================================================
+
+The Detailed Sheet models the economics of a leveraged yield farming strategy where a user:
+\begin{enumerate}
+    \item Deposits stETH as collateral on Aave
+    \item Borrows ETH against the stETH
+    \item Stakes the borrowed ETH via Lido to obtain more stETH
+    \item Repeats the loop to amplify exposure
+\end{enumerate}
+
+Using Twyne's credit delegation mechanism (see Whitepaper Section 4), borrowers can exceed the standard Aave LTV limits by utilizing Credit LP (CLP) collateral, thereby achieving higher leverage than would otherwise be possible.
+
+The sheet computes two primary outputs across a parameter grid:
+\begin{itemize}
+    \item \textbf{Looped Net Farming Yield}: The annualized net yield for the leveraged position
+    \item \textbf{Days to Liquidation}: Time until liquidation if the yield spread turns negative
+\end{itemize}
+
+%==============================================================================
+\section{Sheet Structure Overview}
+%==============================================================================
+
+The Detailed Sheet is organized into the following major sections:
+
+\begin{table}[H]
+\centering
+\caption{Sheet Section Overview}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Section} & \textbf{Rows (approx.)} & \textbf{Purpose} \\
+\midrule
+Borrower Inputs & 11--18 & Core market parameters \\
+Safety Parameters & 19--20 & Liquidation buffer settings \\
+Yield Matrix (HF-based) & 10--31 & Net yield by Health Factor \& Boosted Liq. LTV \\
+Days to Liquidation (HF-based) & 10--31 (cols S--AD) & Liquidation timeline \\
+CLP Inputs & 34--38 & Credit LP parameters \\
+Yield Matrix (Leverage-based) & 37--76 & Net yield by Leverage \& Boosted Liq. LTV \\
+Interest Rate Model Params & 40--45 & Twyne IR model coefficients \\
+Leverage Axes Configuration & 50--52 & Leverage range settings \\
+Yield Improvement Matrix & 80+ & Percentage improvement vs baseline \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%==============================================================================
+\section{Input Parameters}
+%==============================================================================
+
+\subsection{Borrower Parameters}
+
+These parameters define the borrower's market conditions:
+
+\begin{table}[H]
+\centering
+\caption{Borrower Input Parameters}
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Cell} & \textbf{Symbol} & \textbf{Description} & \textbf{Example Value} \\
+\midrule
+C11 & $\borrowltv$ & Liquidation LTV of borrower's collateral (C) on Aave & 95\% \\
+C12 & $\twynemax$ & Twyne Maximum Boosted Liquidation LTV & 98\% \\
+C13 & $r_{\text{stake}}$ & Lending + Staking Rate (stETH yield) & 3.60\% \\
+C14 & $r_{\text{borrow}}$ & Aave ETH Borrow Rate & 20.00\% \\
+C17 & $\healthfactor^{\max}$ & Maximum Health Factor (axis upper bound) & 1.10 \\
+C18 & $\healthfactor^{\min}$ & Minimum Health Factor (axis lower bound) & 1.00 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{CLP Parameters}
+
+These parameters govern the Credit LP economics:
+
+\begin{table}[H]
+\centering
+\caption{Credit LP Input Parameters}
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Cell} & \textbf{Symbol} & \textbf{Description} & \textbf{Example Value} \\
+\midrule
+C34 & $\clpltv$ & Liquidation LTV of CLP collateral on Aave & 95\% \\
+C35 & $r_{\text{CLP,lend}}$ & CLP lending rate on Aave & 3.60\% \\
+C36 & $1-\safetybuffer$ & Complement of Safety buffer & 15\% \\
+C38 & $IR(\utilization)$ & Twyne credit delegation interest rate & varies \\
+C39 & $r_{\text{CLP,total}}$ & Total CLP rate: $r_{\text{CLP,lend}} + \utilization \cdot IR(\utilization)$ & 7.92\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Interest Rate Model Parameters}
+
+The Twyne interest rate model (see Whitepaper Section 5) uses:
+
+\begin{table}[H]
+\centering
+\caption{Interest Rate Model Parameters}
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Cell} & \textbf{Symbol} & \textbf{Description} & \textbf{Example Value} \\
+\midrule
+C42 & $I_{\min}$ & Minimum interest rate & 0.00\% \\
+C43 & $I_0$ & Interest Rate at kink & 0.80\% \\
+C44 & $u_0$ & Utilization at kink & 90.00\% \\
+C45 & $I_{\max}$ & Maximum Interest Rate & 20.00\% \\
+C46 & $\gamma$ & Curvature parameter & 32.00 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Axis Range Parameters}
+
+\begin{table}[H]
+\centering
+\caption{Axis Configuration Parameters}
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Cell} & \textbf{Symbol} & \textbf{Description} & \textbf{Example Value} \\
+\midrule
+C50 & $L^{\max}$ & Maximum Leverage & 50.00 \\
+C51 & $L^{\min}$ & Minimum Leverage & 7.33 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%==============================================================================
+\section{Derived Quantities}
+%==============================================================================
+
+\subsection{Boosted Liquidation LTV Grid}
+
+The column headers (G11:P11) represent a range of ``Boosted Liquidation LTV'' values, interpolated between the Aave LTV and the Twyne maximum:
+
+\begin{equation}
+\tilde{\lambda}_{t,i} = \tilde{\lambda}^C_e + \frac{i}{9} \cdot \left( \twynemax - \tilde{\lambda}^C_e \right), \quad i = 0, 1, \ldots, 9
+\label{eq:ltv_interpolation}
+\end{equation}
+
+For example, with $\tilde{\lambda}^C_e = 0.95$ and $\twynemax = 0.98$:
+\[
+\twyneltv \in \{0.950, 0.953, 0.957, 0.960, 0.963, 0.967, 0.970, 0.973, 0.977, 0.980\}
+\]
+
+\subsection{Health Factor Grid}
+
+The row indices (F12:F31) represent Health Factor values, interpolated as:
+
+\begin{equation}
+\healthfactor_j = \healthfactor^{\max} - \frac{j}{19} \cdot \left( \healthfactor^{\max} - \healthfactor^{\min} \right), \quad j = 0, 1, \ldots, 19
+\label{eq:hf_interpolation}
+\end{equation}
+
+This produces Health Factors from 1.10 down to 1.00 in 20 steps.
+
+\subsection{Leverage from LTV}
+
+Leverage is derived from LTV via the standard looping formula:
+
+\begin{equation}
+L = \frac{1}{1 - \lambda_t}
+\label{eq:leverage}
+\end{equation}
+
+For example:
+\begin{itemize}
+    \item $\lambda_t$ = 0.80 $\Rightarrow$ $L = 5\times$
+    \item $\lambda_t$ = 0.95 $\Rightarrow$ $L = 20\times$
+    \item $\lambda_t$ = 0.98 $\Rightarrow$ $L = 50\times$
+\end{itemize}
+
+\subsection{Operating LTV from Health Factor}
+
+Given a Boosted Liquidation LTV ($\twyneltv$) and a Health Factor, the operating LTV is:
+
+\begin{equation}
+\lambda_t = \frac{\twyneltv}{\healthfactor}
+\label{eq:operating_ltv}
+\end{equation}
+
+%==============================================================================
+\section{Core Formulas}
+%==============================================================================
+
+\subsection{Credit Delegation Cost Term}
+
+The spreadsheet calculates the cost a borrower pays for credit delegation. This appears as a term in the yield formula (e.g., cell G12) that multiplies the credit delegation interest rate ($IR(\utilization)$, cell C38) by a factor representing the ratio of delegated credit to borrower collateral.
+
+From the yield formula in cell G12:
+\begin{verbatim}
+C38 * ((G11/((1-C36)*C34)) - (C11/C34))
+\end{verbatim}
+
+Cell C36 stores $(1 - \beta_{\text{safe}})$, so the term \texttt{(1-C36)} recovers $\beta_{\text{safe}}$. The CLP cost factor $\Psi$ is therefore:
+\begin{equation}
+\Psi = \frac{\twyneltv}{\safetybuffer \cdot \clpltv} - \frac{\borrowltv}{\clpltv},
+\label{eq:clp_cost_factor}
+\end{equation}
+as expected from the credit delegation invariant int eh Whitepaper, where:
+\begin{itemize}
+    \item $\twyneltv$ is the Boosted Liquidation LTV (column headers G11:P11)
+    \item $\safetybuffer = 1 - \texttt{C36}$ is Twyne's safety buffer parameter
+    \item $\clpltv$ is the liquidation LTV of the CLP collateral on Aave (cell C34)
+    \item $\borrowltv$ is the liquidation LTV of the borrower's collateral (C) on Aave (cell C11)
+\end{itemize}
+
+\textbf{Note on asset agnosticism:} The spreadsheet is agnostic to which specific asset is used as CLP collateral. In the stETH-ETH looping scenario, the borrower's collateral (C) is stETH, while the CLP collateral could be stETH or ETH---all that matters is its liquidation LTV on the external lending market.
+
+\textbf{Relationship to Whitepaper Equation 7:} This matches the whitepaper's credit reservation invariant exactly:
+\begin{equation}
+C_{LP}^{\text{ideal}} = C \cdot \left( \frac{\twyneltv}{\safetybuffer \cdot \clpltv} - \frac{\borrowltv}{\clpltv} \right)
+\label{eq:credit_reservation_wp}
+\end{equation}
+
+\subsection{Looped Net Farming Yield (Health Factor Parameterization)}
+\label{sec:yield_hf}
+
+The primary yield calculation, parameterized by Health Factor and Boosted Liquidation LTV. Let $\Psi$ denote the CLP cost factor from Equation~\eqref{eq:clp_cost_factor}, the yield formula is:
+\begin{equation}
+\boxed{
+Y = \frac{r_{\text{stake}} - r_{\text{borrow}} \cdot \lambda_t - IR(\utilization) \cdot \Psi}{1 - \lambda_t}
+}
+\label{eq:yield_hf}
+\end{equation}
+
+where $IR(\utilization)$ is the Twyne interest rate (cell C38) from the interest rate model (Section~\ref{sec:ir_model}).
+
+\textbf{Derivation:}
+
+Consider a looped position with $n$ iterations. Let $C_0$ be the initial collateral. After looping:
+\begin{align}
+\text{Total Collateral} &= C_0 \cdot \sum_{k=0}^{n-1} \lambda_t^k = C_0 \cdot \frac{1}{1 - \lambda_t} \\
+\text{Total Debt} &= C_0 \cdot \sum_{k=1}^{n} \lambda_t^k = C_0 \cdot \frac{\lambda_t}{1 - \lambda_t}
+\end{align}
+
+The net yield on initial capital is:
+\begin{align}
+Y &= \frac{\text{(Collateral Yield)} - \text{(Borrow Cost)} - \text{(CLP Cost)}}{\text{Initial Capital}} \\
+&= \frac{r_{\text{stake}} \cdot \frac{C_0}{1-\lambda_t} - r_{\text{borrow}} \cdot \frac{C_0 \cdot \lambda_t}{1-\lambda_t} - IR(\utilization) \cdot \Psi \cdot \frac{C_0}{1-\lambda_t}}{C_0}
+\end{align}
+
+Simplifying yields Equation~\eqref{eq:yield_hf}.
+
+\subsection{Looped Net Farming Yield (Leverage Parameterization)}
+
+An alternative formulation uses leverage $L$ directly. Leverage and operating LTV are related by:
+\begin{equation}
+L = \frac{1}{1 - \lambda_t} \quad \Leftrightarrow \quad \lambda_t = \frac{L-1}{L}
+\end{equation}
+
+Substituting into Equation~\eqref{eq:yield_hf}:
+\begin{equation}
+Y = \frac{r_{\text{stake}} - r_{\text{borrow}} \cdot \dfrac{L-1}{L} - IR(\utilization) \cdot \Psi}{1/L}
+\label{eq:yield_leverage}
+\end{equation}
+
+which simplifies to:
+\begin{equation}
+Y = L \cdot r_{\text{stake}} - (L-1) \cdot r_{\text{borrow}} - L \cdot IR(\utilization) \cdot \Psi
+\end{equation}
+
+The sheet includes a validity check: if the target leverage exceeds the maximum achievable leverage at a given Boosted Liquidation LTV (i.e., $L > 1/(1-\twyneltv)$), the cell displays ``--'' indicating an infeasible configuration.
+
+\subsection{Days to Liquidation}
+\label{sec:days_to_liq}
+
+When the net spread is negative (borrowing costs exceed staking yields), the Health Factor decays over time. The sheet calculates the number of days until the health factor decays to 1; i.e. days to liquidation.
+
+\subsubsection{Net Daily Rate}
+
+The net daily rate of Health Factor decay is:
+
+\begin{equation}
+r_{\text{net}} = r_{\text{stake}} - r_{\text{borrow}} - IR(\utilization) \cdot \Psi
+\label{eq:net_rate}
+\end{equation}
+
+where $\Psi$ is the CLP cost factor from Equation~\eqref{eq:clp_cost_factor}. When $r_{\text{net}} < 0$, the position loses value over time.
+
+\subsubsection{Days to Liquidation Formula}
+
+The Health Factor evolves as:
+\begin{equation}
+\healthfactor(t) = \healthfactor_0 \cdot \left(1 + \frac{r_{\text{net}}}{1 + r_{\text{borrow}}}\right)^{t/D}
+\end{equation}
+
+where $t$ is time in days and $D = 365$. Liquidation occurs when $\healthfactor(t) = 1$. Solving:
+
+\begin{equation}
+\boxed{
+T_{\text{liq}} = -D \cdot \frac{\ln(\healthfactor_0)}{\ln\left(1 + \dfrac{r_{\text{net}}}{1 + r_{\text{borrow}}}\right)}
+}
+\label{eq:days_to_liq}
+\end{equation}
+
+\textbf{Implementation Notes:}
+\begin{itemize}
+    \item If $r_{\text{net}} > 0$, the position is ``SAFE'' (Health Factor improves over time)
+    \item The sheet uses a threshold of $-0.00001$ to handle floating-point precision
+    \item The formula assumes continuous compounding approximated by daily steps
+\end{itemize}
+
+%==============================================================================
+\section{Secondary Calculations}
+%==============================================================================
+
+\subsection{Leverage Grid Interpolation}
+
+For the leverage-based yield matrices, leverage values are interpolated logarithmically:
+
+\begin{equation}
+L_k = 10^{\log_{10}(L^{\max}) - \frac{k}{19} \cdot \left(\log_{10}(L^{\max}) - \log_{10}(L^{\min})\right)}
+\label{eq:leverage_interp}
+\end{equation}
+
+This produces a logarithmic scale from $L^{\max} = 50$ down to $L^{\min} \approx 7.33$, which corresponds to LTV values from 0.98 to approximately 0.864.
+
+\subsection{Yield Improvement}
+
+The ``Looped Net Farming Yield Improvement'' section calculates the percentage improvement of the Twyne-boosted yield over a baseline:
+
+\begin{equation}
+\Delta Y = \frac{Y(\tilde{\lambda}_{t,i}, \healthfactor_j)}{Y(\tilde{\lambda}^C_e, \healthfactor_j)} - 1
+\label{eq:yield_improvement}
+\end{equation}
+
+This quantifies the benefit of using Twyne credit delegation compared to a standard Aave position at the same Health Factor.
+
+\subsection{Raw Credit Delegation Rate}
+
+The raw credit delegation rate earned by CLPs is calculated based on the interest rate model from Whitepaper Section 5:
+
+\begin{equation}
+r_{\text{raw}} = \utilization \cdot IR(\utilization)
+\end{equation}
+
+where $IR(\utilization)$ is the Twyne interest rate function (see Section~\ref{sec:ir_model}).
+
+%==============================================================================
+\section{Interest Rate Model}
+\label{sec:ir_model}
+%==============================================================================
+
+The Twyne interest rate model (Whitepaper Section 5) determines the credit delegation rate as a function of utilization:
+
+\begin{equation}
+IR(\utilization) = I_{\min} + \frac{I_0 - I_{\min}}{u_0} \cdot \utilization + \left(I_{\max} - I_{\min} - \frac{I_0 - I_{\min}}{u_0}\right) \cdot \utilization^\gamma
+\label{eq:ir_model}
+\end{equation}
+
+The CLP rate earned by Credit LPs is:
+
+\begin{equation}
+r_{\text{CLP,earned}} = \utilization \cdot IR(\utilization)
+\label{eq:clp_rate}
+\end{equation}
+
+Key properties:
+\begin{itemize}
+    \item At low utilization, rates are low to encourage borrowing
+    \item As utilization approaches 100\%, rates increase sharply (governed by $\gamma$)
+    \item The high $\gamma$ value (32) creates a steep rate curve near full utilization
+\end{itemize}
+
+%==============================================================================
+\section{Matrix Structure}
+%==============================================================================
+
+\subsection{Primary Yield Matrix (Rows 12--31, Columns G--P)}
+
+\begin{table}[H]
+\centering
+\caption{Yield Matrix Structure}
+\begin{tabular}{@{}l|cccc@{}}
+\toprule
+ & \multicolumn{4}{c}{\textbf{Boosted Liquidation LTV}} \\
+\textbf{Health Factor} & 95.0\% & 96.0\% & 97.0\% & 98.0\% \\
+\midrule
+1.10 & $Y_{1,1}$ & $Y_{1,2}$ & $Y_{1,3}$ & $Y_{1,4}$ \\
+1.09 & $Y_{2,1}$ & $Y_{2,2}$ & $Y_{2,3}$ & $Y_{2,4}$ \\
+$\vdots$ & $\vdots$ & $\vdots$ & $\vdots$ & $\vdots$ \\
+1.00 & $Y_{20,1}$ & $Y_{20,2}$ & $Y_{20,3}$ & $Y_{20,4}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Each cell $Y_{j,i}$ is computed using Equation~\eqref{eq:yield_hf} with:
+\begin{itemize}
+    \item $\twyneltv = \tilde{\lambda}_{t,i}$ from Equation~\eqref{eq:ltv_interpolation}
+    \item $\healthfactor = \healthfactor_j$ from Equation~\eqref{eq:hf_interpolation}
+\end{itemize}
+
+\subsection{Days to Liquidation Matrix (Rows 12--31, Columns U--AD)}
+
+Mirrors the yield matrix structure but displays $T_{\text{liq}}$ from Equation~\eqref{eq:days_to_liq}. Cells display ``SAFE'' when $r_{\text{net}} > 0$.
+
+\subsection{Leverage-Based Matrices (Rows 37--76)}
+
+Similar structure but rows are indexed by leverage values (Equation~\eqref{eq:leverage_interp}) rather than Health Factor.
+
+%==============================================================================
+\section{Interpretation Guide}
+%==============================================================================
+
+\subsection{Reading the Yield Matrix}
+
+\textbf{Example:} At HF = 1.10 and Boosted Liquidation LTV $\twyneltv = 95\%$, with default parameters ($\safetybuffer = 0.85$, $\clpltv = 0.95$, $\borrowltv = 0.95$):
+\begin{align}
+\lambda_t &= \frac{0.95}{1.10} \approx 0.864 \\
+\Psi &= \frac{0.95}{0.85 \cdot 0.95} - \frac{0.95}{0.95} = \frac{0.95}{0.8075} - 1 \approx 0.176 \\
+Y &= \frac{0.036 - 0.20 \cdot 0.864 - IR(u) \cdot 0.176}{1 - 0.864}
+\end{align}
+
+The operating LTV is $\lambda_t = 86.4\%$, and the CLP cost factor $\Psi \approx 0.176$ represents the ratio of credit that must be reserved per unit of borrower collateral. The overall yield depends on the Twyne interest rate $IR(u)$ at the current utilization level.
+
+\subsection{Sensitivity Analysis}
+
+The matrix structure enables quick sensitivity analysis:
+\begin{itemize}
+    \item \textbf{Moving right} (higher Boosted Liquidation LTV): Higher leverage, more CLP cost
+    \item \textbf{Moving down} (lower Health Factor): Higher operating LTV ($\lambda_t$), more borrow cost
+    \item \textbf{Changing $r_{\text{stake}}$}: Shifts entire matrix proportionally
+    \item \textbf{Changing $\utilization$}: Affects CLP cost factor ($\Psi$) non-linearly
+\end{itemize}
+
+\subsection{Break-Even Analysis}
+
+The sheet can identify break-even conditions:
+\begin{itemize}
+    \item Find the minimum staking rate for profitability at given HF/LTV
+    \item Determine maximum tolerable borrow rate
+    \item Identify optimal leverage point
+\end{itemize}
+
+%==============================================================================
+\section{Connection to Whitepaper}
+%==============================================================================
+
+\begin{table}[H]
+\centering
+\caption{Mapping to Whitepaper Sections}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Sheet Concept} & \textbf{Whitepaper Section} & \textbf{Reference} \\
+\midrule
+Credit Delegation & Section 4 & Equation 7 (credit reservation invariant) \\
+Rebalancing Mechanics & Section 4.1 & Rebalancing mechanics and triggers \\
+Interest Rate Model & Section 5 & Equation 9 (IR model) \\
+CLP Loss Analysis & Section 7 & Loss attribution and bad debt \\
+Safety Buffer ($\safetybuffer$) & Section 4 & Buffer parameter in Equation 7 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%==============================================================================
+\section{Appendix: Cell Reference Map}
+%==============================================================================
+
+\begin{table}[H]
+\centering
+\caption{Complete Cell Reference Map}
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Cell} & \textbf{Variable} & \textbf{Formula/Value} & \textbf{Units} \\
+\midrule
+C11 & $\borrowltv$ & Liquidation LTV of borrower's collateral (C) on Aave & \% \\
+C12 & $\twynemax$ & Twyne max Boosted Liquidation LTV & \% \\
+C13 & $r_{\text{stake}}$ & Staking + lending rate & \% APR \\
+C14 & $r_{\text{borrow}}$ & Aave borrow rate & \% APR \\
+C17 & $\healthfactor^{\max}$ & HF axis upper bound & dimensionless \\
+C18 & $\healthfactor^{\min}$ & HF axis lower bound & dimensionless \\
+C34 & $\clpltv$ & Liquidation LTV of CLP collateral on Aave & \% \\
+C35 & $r_{\text{CLP,lend}}$ & CLP lending rate on Aave & \% APR \\
+C36 & $1 - \safetybuffer$ & Complement of safety buffer & \% \\
+C38 & $IR(\utilization)$ & Twyne credit delegation IR & \% APR \\
+C39 & $r_{\text{CLP,total}}$ & Total CLP rate & \% APR \\
+C50 & $L^{\max}$ & Input & $\times$ \\
+C51 & $L^{\min}$ & Input & $\times$ \\
+C55 & $D$ & 365 & days \\
+\midrule
+G11:P11 & $\tilde{\lambda}_{t,i}$ & Eq.~\eqref{eq:ltv_interpolation} & \% \\
+F12:F31 & $\healthfactor_j$ & Eq.~\eqref{eq:hf_interpolation} & dimensionless \\
+G12:P31 & $Y_{j,i}$ & Eq.~\eqref{eq:yield_hf} & \% APR \\
+U12:AD31 & $T_{\text{liq}}$ & Eq.~\eqref{eq:days_to_liq} & days \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%==============================================================================
+\section{Appendix: Formula Verification}
+%==============================================================================
+
+To verify the spreadsheet formulas match this documentation:
+
+\subsection{Yield Formula (Cell G12)}
+\begin{verbatim}
+=(C13 - C14*(G11/F12) - C38*((G11/((1-C36)*C34)) - (C11/C34)))
+ / (1 - (G11/F12))
+\end{verbatim}
+
+Corresponds to Equation~\eqref{eq:yield_hf} with:
+\begin{itemize}
+    \item \texttt{C13} = $r_{\text{stake}}$ (staking + lending rate)
+    \item \texttt{C14} = $r_{\text{borrow}}$ (Aave borrow rate)
+    \item \texttt{G11} = $\twyneltv$ (Boosted Liquidation LTV)
+    \item \texttt{F12} = $\healthfactor$ (health factor)
+    \item \texttt{C38} = $IR(\utilization)$ (Twyne credit delegation interest rate)
+    \item \texttt{C36} = $1 - \safetybuffer$ (so \texttt{1-C36} = $\safetybuffer$)
+    \item \texttt{C34} = $\clpltv$ (liquidation LTV of CLP collateral on Aave)
+    \item \texttt{C11} = $\borrowltv$ (liquidation LTV of borrower's collateral on Aave)
+\end{itemize}
+
+\subsection{Days to Liquidation Formula (Cell U12)}
+\begin{verbatim}
+=IF(-C55*LOG(T12)/LOG(1+(C13-C14-C38*((U11/((1-C36)*C34))
+  -(C11/C34)))/(1+C14)) >= -0.00001,
+  -C55*LOG(T12)/LOG(1+(C13-C14-C38*((U11/((1-C36)*C34))
+  -(C11/C34)))/(1+C14)),
+  "SAFE")
+\end{verbatim}
+
+Corresponds to Equation~\eqref{eq:days_to_liq} with the ``SAFE'' condition when $T_{\text{liq}} < 0$ (i.e., positive net rate).
+
+\end{document}
