@@ -32,7 +32,7 @@ DEFAULTS = {
     "liq_ltv_clp": 0.95,     # λ̃_e^CLP: Liquidation LTV for CLP collateral (stETH)
 
     # Twyne parameters
-    "beta_safe": 0.85,       # Safety buffer
+    "beta_safe": 1.0,        # Safety buffer
     "liq_ltv_t_max": 0.98,   # λ̃_t^max: Maximum boosted liquidation LTV
 
     # Interest rate model parameters (Whitepaper Section 5)

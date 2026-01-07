@@ -153,10 +153,20 @@ def run_backtest(
     if n_days == 0:
         raise ValueError("No data in specified date range")
 
+    # Calculate Aave max leverage (no Twyne needed below this)
+    aave_max_leverage = 1.0 / (1.0 - params["liq_ltv_c"])
+
     # Calculate fixed parameters
     liq_ltv_t = ltv_from_leverage(leverage) * initial_hf  # λ̃_t such that at initial_hf we're at target leverage
-    psi_val = psi(liq_ltv_t, params["beta_safe"], params["liq_ltv_clp"], params["liq_ltv_c"])
-    ir_u = interest_rate(utilization, **{k: params[k] for k in ["I_min", "I_0", "u_0", "I_max", "gamma"]})
+
+    # Only apply Twyne credit cost if leverage exceeds what Aave allows
+    if leverage > aave_max_leverage:
+        psi_val = psi(liq_ltv_t, params["beta_safe"], params["liq_ltv_clp"], params["liq_ltv_c"])
+        ir_u = interest_rate(utilization, **{k: params[k] for k in ["I_min", "I_0", "u_0", "I_max", "gamma"]})
+    else:
+        # No Twyne needed - can do this on Aave alone
+        psi_val = 0.0
+        ir_u = 0.0
 
     # Initialize arrays
     hf = np.zeros(n_days)
