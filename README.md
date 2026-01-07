@@ -4,11 +4,23 @@ Interactive dashboard and Python module for analyzing stETH-ETH leveraged yield 
 
 ## Quick Start
 
+### Using uv (recommended)
+
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install dependencies (uses lockfile for reproducible builds)
+uv sync
 
 # Run the interactive dashboard
+uv run streamlit run app.py
+```
+
+### Using pip
+
+```bash
+pip install -r requirements.txt
 streamlit run app.py
 ```
 
