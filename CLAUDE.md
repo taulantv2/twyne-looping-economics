@@ -11,11 +11,14 @@ This project analyzes the economics of yield farming stETH-ETH interest rate spr
 ## Quick Start
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install dependencies (uses lockfile for reproducible builds)
+uv sync
 
 # Run the dashboard
-streamlit run app.py
+uv run streamlit run app.py
 ```
 
 ---
