@@ -280,9 +280,10 @@ def get_leverage_style(L):
 
 st.title("🔄 Twyne stETH-ETH Looping Economics")
 
-tab1, tab2 = st.tabs([
+tab1, tab2, tab3 = st.tabs([
     "📈 Backtest & History",
-    "📊 Yield Analysis"
+    "📊 Yield Analysis",
+    "⚖️ Leverage Risk Analysis"
 ])
 
 # =============================================================================
@@ -1069,17 +1070,85 @@ with tab2:
             'color': leverage_colors.get(L, '#666'),
         }
 
-    # Rate Buffer header and metrics
+    # Rate Buffer header and plot
     st.markdown("**Rate Buffer** — Max borrow rate increase before losing money")
-    metric_cols = st.columns(len(leverage_levels))
-    for i, L in enumerate(leverage_levels):
-        data = leverage_data[L]
-        with metric_cols[i]:
-            st.metric(
-                data['label'],
-                f"+{data['buffer']:.0f}%" if data['buffer'] < 1000 else "Safe",
-                help=f"Borrow rate can increase by this much before {data['label']} yield turns negative"
-            )
+    st.caption("Higher buffer = more resilient to rate spikes. Buffer drops rapidly as leverage increases.")
+
+    # Calculate rate buffer for all leverage levels
+    all_lev_for_buffer = list(range(2, twyne_max_int + 1))
+    all_buffers = []
+    for L in all_lev_for_buffer:
+        lt = ltv_from_leverage(L)
+        llt = lt * ref_hf_shock
+        p = psi(llt, params['beta_safe'], params['liq_ltv_clp'], params['liq_ltv_c'])
+        break_even = (L * r_stake - L * p * ir_u) / (L - 1)
+        buffer_pct = (break_even / r_borrow - 1) * 100 if r_borrow > 0 else 1000
+        # Cap at 500% for visualization
+        all_buffers.append(min(buffer_pct, 500))
+
+    fig_buffer = go.Figure()
+
+    # Split into Aave and Twyne regions
+    aave_lev_buf = [L for L in all_lev_for_buffer if L <= aave_max_int]
+    aave_buffers = [all_buffers[i] for i, L in enumerate(all_lev_for_buffer) if L <= aave_max_int]
+    twyne_lev_buf = [L for L in all_lev_for_buffer if L > aave_max_int]
+    twyne_buffers = [all_buffers[i] for i, L in enumerate(all_lev_for_buffer) if L > aave_max_int]
+
+    # Aave region
+    if aave_lev_buf:
+        fig_buffer.add_trace(go.Scatter(
+            x=aave_lev_buf,
+            y=aave_buffers,
+            mode='lines',
+            line=dict(color='#6c757d', width=2.5),
+            name='Aave',
+            hovertemplate='Aave %{x}x<br>Buffer: +%{y:.0f}%<extra></extra>',
+        ))
+
+    # Twyne region
+    if twyne_lev_buf:
+        twyne_x = [aave_max_int] + twyne_lev_buf if aave_lev_buf else twyne_lev_buf
+        twyne_y = [aave_buffers[-1]] + twyne_buffers if aave_buffers else twyne_buffers
+        fig_buffer.add_trace(go.Scatter(
+            x=twyne_x,
+            y=twyne_y,
+            mode='lines',
+            line=dict(color='#5E60CE', width=2.5),
+            name='Twyne',
+            hovertemplate='Twyne %{x}x<br>Buffer: +%{y:.0f}%<extra></extra>',
+        ))
+
+    # Add markers for selected leverage levels
+    for L in leverage_levels:
+        if L in all_lev_for_buffer:
+            idx = all_lev_for_buffer.index(L)
+            buf_val = all_buffers[idx]
+            name, color, _ = get_leverage_style(L)
+            fig_buffer.add_trace(go.Scatter(
+                x=[L],
+                y=[buf_val],
+                mode='markers+text',
+                marker=dict(size=12, color=color, line=dict(width=2, color='white')),
+                text=[f'{name}<br>+{buf_val:.0f}%'],
+                textposition='top center',
+                textfont=dict(size=10),
+                name=name,
+                showlegend=False,
+                hovertemplate=f'{name}<br>Buffer: +{buf_val:.0f}%<extra></extra>',
+            ))
+
+    # Add vertical line at Aave max
+    fig_buffer.add_vline(x=aave_max_int, line_dash="dot", line_color="#adb5bd", opacity=0.7)
+
+    max_buffer = max(all_buffers) if all_buffers else 100
+    fig_buffer.update_layout(
+        xaxis_title="Leverage",
+        yaxis_title="Rate Buffer (%)",
+        height=300,
+        yaxis=dict(range=[0, min(max_buffer * 1.3, 550)]),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    st.plotly_chart(fig_buffer, width='stretch')
 
     st.markdown("**Impact of Borrow Rate Spikes**")
     st.caption("How yield and time-to-liquidation change as borrow rates increase. Steeper slope = higher sensitivity to rate shocks.")
@@ -1192,6 +1261,64 @@ with tab2:
 
     st.caption("**Reading these charts:** Steeper yield decline = more sensitive to rate shocks. "
                "Days to Liquidation shows how long you have to react. 'Safe' = positive yield, no liquidation risk.")
+
+    # =========================================================================
+    # Break-even Spread vs Holding stETH
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("**Break-even Spread vs Holding stETH**")
+    st.caption("Minimum spread needed for leverage to **beat just holding stETH**. For Aave (no fees), any positive spread makes leverage better. For Twyne, you need enough spread to cover credit costs.")
+
+    # Calculate break-even spreads for all leverage levels
+    be_analysis_hf = 1.05
+    be_all_levs = list(range(2, int(L_max_global) + 1))
+    be_break_even_vs_hold = []
+
+    for L in be_all_levs:
+        lt = ltv_from_leverage(L)
+        llt = lt * be_analysis_hf
+        is_twyne = L > L_aave
+        if is_twyne:
+            p = psi(llt, params['beta_safe'], params['liq_ltv_clp'], params['liq_ltv_c'])
+            credit_cost = L * p * ir_u
+        else:
+            credit_cost = 0
+        be_hold = credit_cost / (L - 1) if L > 1 else 0
+        be_break_even_vs_hold.append(be_hold * 100)
+
+    fig_be = go.Figure()
+
+    # Split Aave/Twyne
+    be_aave_levs = [L for L in be_all_levs if L <= int(L_aave)]
+    be_aave_vals = [be_break_even_vs_hold[i] for i, L in enumerate(be_all_levs) if L <= int(L_aave)]
+    be_twyne_levs = [L for L in be_all_levs if L > int(L_aave)]
+    be_twyne_vals = [be_break_even_vs_hold[i] for i, L in enumerate(be_all_levs) if L > int(L_aave)]
+
+    if be_aave_levs:
+        fig_be.add_trace(go.Scatter(
+            x=be_aave_levs, y=be_aave_vals, mode='lines', name='Aave',
+            line=dict(color='#6c757d', width=2.5),
+            hovertemplate='Aave %{x}x<br>Beat Hold at: %{y:.3f}% spread<extra></extra>',
+        ))
+
+    if be_twyne_levs:
+        be_twyne_x = [int(L_aave)] + be_twyne_levs if be_aave_levs else be_twyne_levs
+        be_twyne_y = [be_aave_vals[-1]] + be_twyne_vals if be_aave_vals else be_twyne_vals
+        fig_be.add_trace(go.Scatter(
+            x=be_twyne_x, y=be_twyne_y, mode='lines', name='Twyne',
+            line=dict(color='#5E60CE', width=2.5),
+            hovertemplate='Twyne %{x}x<br>Beat Hold at: %{y:.3f}% spread<extra></extra>',
+        ))
+
+    fig_be.add_hline(y=0, line_dash="dot", line_color="#adb5bd", line_width=1, opacity=0.5)
+
+    fig_be.update_layout(
+        xaxis_title="Leverage",
+        yaxis_title="Break-even Spread %",
+        height=300,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    st.plotly_chart(fig_be, width='stretch')
 
 # =============================================================================
 # Tab 1: Backtest & History
@@ -1646,39 +1773,92 @@ with tab1:
         col1, col2 = st.columns(2)
 
         with col1:
-            st.markdown("**Sharpe Ratio**")
-            st.caption("Return divided by volatility. Above 1.0 = good, above 2.0 = excellent. Measures return per unit of daily volatility.")
-            # Sharpe Ratio comparison
-            leverages = sorted(results.keys())
-            sharpes = [results[L].metrics['sharpe_ratio'] if not np.isnan(results[L].metrics['sharpe_ratio']) else 0 for L in leverages]
+            st.markdown("**Sharpe Ratio vs Leverage**")
+            st.caption("Return divided by volatility. Above 1.0 = good, above 2.0 = excellent. Shows how risk-adjusted returns change with leverage.")
 
-            # Get colors and names using helper
-            bar_colors = []
-            bar_names = []
-            bar_widths = []
-            for L in leverages:
-                name, color, _ = get_leverage_style(L)
-                bar_names.append(name)
-                bar_colors.append(color)
-                bar_widths.append(0.6 if L <= int(L_aave) else 0.8)
+            # Run backtests for all leverage levels from 2 to max
+            max_lev = int(L_max_global)
+            all_leverages = list(range(2, max_lev + 1))
 
-            fig_sharpe = go.Figure(data=[
-                go.Bar(
-                    x=bar_names,
-                    y=sharpes,
-                    marker_color=bar_colors,
-                    width=bar_widths,
-                    text=[f'{s:.2f}' for s in sharpes],
-                    textposition='outside',
-                )
-            ])
-            # Add headroom for text labels above bars
-            max_sharpe = max(sharpes) if sharpes else 1
+            # Compute Sharpe for all leverage levels
+            all_sharpes = []
+            for L in all_leverages:
+                if L in results:
+                    # Use already computed result
+                    sharpe = results[L].metrics['sharpe_ratio'] if not np.isnan(results[L].metrics['sharpe_ratio']) else 0
+                else:
+                    # Compute new
+                    try:
+                        result = run_backtest(df_filtered, L, initial_hf=bt_initial_hf, utilization=utilization, **params)
+                        sharpe = result.metrics['sharpe_ratio'] if not np.isnan(result.metrics['sharpe_ratio']) else 0
+                    except:
+                        sharpe = 0
+                all_sharpes.append(sharpe)
+
+            fig_sharpe = go.Figure()
+
+            # Split into Aave (≤L_aave) and Twyne (>L_aave) regions
+            aave_levs = [L for L in all_leverages if L <= int(L_aave)]
+            aave_sharpes = [all_sharpes[i] for i, L in enumerate(all_leverages) if L <= int(L_aave)]
+            twyne_levs = [L for L in all_leverages if L > int(L_aave)]
+            twyne_sharpes = [all_sharpes[i] for i, L in enumerate(all_leverages) if L > int(L_aave)]
+
+            # Aave region line
+            if aave_levs:
+                fig_sharpe.add_trace(go.Scatter(
+                    x=aave_levs,
+                    y=aave_sharpes,
+                    mode='lines',
+                    line=dict(color='#6c757d', width=2.5),
+                    name='Aave',
+                    hovertemplate='Aave %{x}x<br>Sharpe: %{y:.2f}<extra></extra>',
+                ))
+
+            # Twyne region line
+            if twyne_levs:
+                # Connect from last Aave point
+                twyne_x = [int(L_aave)] + twyne_levs if aave_levs else twyne_levs
+                twyne_y = [aave_sharpes[-1]] + twyne_sharpes if aave_sharpes else twyne_sharpes
+                fig_sharpe.add_trace(go.Scatter(
+                    x=twyne_x,
+                    y=twyne_y,
+                    mode='lines',
+                    line=dict(color='#5E60CE', width=2.5),
+                    name='Twyne',
+                    hovertemplate='Twyne %{x}x<br>Sharpe: %{y:.2f}<extra></extra>',
+                ))
+
+            # Add markers for selected leverage levels
+            selected_leverages = sorted(results.keys())
+            for L in selected_leverages:
+                if L in all_leverages:
+                    idx = all_leverages.index(L)
+                    sharpe_val = all_sharpes[idx]
+                    name, color, _ = get_leverage_style(L)
+                    fig_sharpe.add_trace(go.Scatter(
+                        x=[L],
+                        y=[sharpe_val],
+                        mode='markers+text',
+                        marker=dict(size=12, color=color, line=dict(width=2, color='white')),
+                        text=[f'{name}<br>{sharpe_val:.1f}'],
+                        textposition='top center',
+                        textfont=dict(size=10),
+                        name=name,
+                        showlegend=False,
+                        hovertemplate=f'{name}<br>Sharpe: {sharpe_val:.2f}<extra></extra>',
+                    ))
+
+            # Add vertical line at Aave max
+            fig_sharpe.add_vline(x=int(L_aave), line_dash="dot", line_color="#adb5bd", opacity=0.7,
+                                 annotation_text=f"Aave max ({int(L_aave)}x)", annotation_position="top")
+
+            max_sharpe = max(all_sharpes) if all_sharpes else 1
             fig_sharpe.update_layout(
-                xaxis_title="",
+                xaxis_title="Leverage",
                 yaxis_title="Sharpe Ratio",
                 height=320,
-                yaxis=dict(range=[0, max_sharpe * 1.15]),  # 15% headroom
+                yaxis=dict(range=[0, max(max_sharpe * 1.25, 1.5)]),  # Extra headroom for labels
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             )
             st.plotly_chart(fig_sharpe, width='stretch')
 
@@ -1686,13 +1866,14 @@ with tab1:
             st.markdown("**Return vs Risk**")
             st.caption("Each point shows leverage's return (y) vs drawdown (x). Ideal = top-left (high return, low drawdown). Lines from origin show risk/return slope.")
             # Return vs Max Drawdown scatter
-            returns = [results[L].metrics['annualized_return'] * 100 for L in leverages]
-            drawdowns = [abs(results[L].metrics['max_drawdown']) * 100 for L in leverages]
+            selected_levs = sorted(results.keys())
+            returns = [results[L].metrics['annualized_return'] * 100 for L in selected_levs]
+            drawdowns = [abs(results[L].metrics['max_drawdown']) * 100 for L in selected_levs]
 
             fig_risk = go.Figure()
 
             # Draw lines from origin to each point
-            for i, L in enumerate(leverages):
+            for i, L in enumerate(selected_levs):
                 name, color, _ = get_leverage_style(L)
                 if drawdowns[i] > 0:
                     fig_risk.add_trace(go.Scatter(
@@ -1705,7 +1886,7 @@ with tab1:
                     ))
 
             # Add points on top
-            for i, L in enumerate(leverages):
+            for i, L in enumerate(selected_levs):
                 name, color, _ = get_leverage_style(L)
                 size = 12 if L <= int(L_aave) else 20
                 fig_risk.add_trace(go.Scatter(
@@ -1938,6 +2119,355 @@ with tab1:
 
     else:
         st.caption(f"Run a backtest with at least {roll_window} days of data to see rolling return analysis.")
+
+# =============================================================================
+# Tab 3: Time to Liquidation
+# =============================================================================
+with tab3:
+    st.header("Time to Liquidation")
+
+    # =========================================================================
+    # Chart: HF vs Spread Sensitivity - Contour Heatmaps
+    # =========================================================================
+    st.markdown("**HF vs Spread Sensitivity: Aave vs Twyne**")
+    st.caption("Contour maps showing days to liquidation. Green = safe (>365 days), Red = danger (<30 days).")
+
+    # Grid for heatmap (HF limited to 1.01-1.10)
+    hf_range_sens = np.linspace(1.01, 1.10, 40)
+    spread_range_sens = np.linspace(-0.10, 0.02, 60)  # -10% to +2%
+    HF_grid, SPREAD_grid = np.meshgrid(hf_range_sens, spread_range_sens, indexing='ij')
+
+    # Aave: r_net = spread (no Ψ×IR cost)
+    aave_rnet = SPREAD_grid
+    aave_decay = 1 + aave_rnet / (1 + r_borrow)
+    aave_decay_safe = np.where(aave_decay > 0, aave_decay, 1)
+    aave_tliq = np.where(
+        aave_rnet >= 0, 500,
+        np.where(aave_decay <= 0, 500,
+                 np.clip(-365 * np.log(HF_grid) / np.log(aave_decay_safe), 0, 500))
+    )
+
+    # Twyne: r_net = spread - Ψ×IR (Ψ at max LLTV)
+    twyne_psi_val = liq_ltv_max / (beta_safe * liq_ltv_clp) - liq_ltv_c / liq_ltv_clp
+    twyne_psi_val = max(twyne_psi_val, 0)
+    ir_u_val = interest_rate(utilization)
+    twyne_rnet = SPREAD_grid - twyne_psi_val * ir_u_val
+    twyne_decay = 1 + twyne_rnet / (1 + r_borrow)
+    twyne_decay_safe = np.where(twyne_decay > 0, twyne_decay, 1)
+    twyne_tliq = np.where(
+        twyne_rnet >= 0, 500,
+        np.where(twyne_decay <= 0, 500,
+                 np.clip(-365 * np.log(HF_grid) / np.log(twyne_decay_safe), 0, 500))
+    )
+
+    # 2x2 grid: contour heatmaps on top, spread distribution histogram below
+    fig_sens = make_subplots(
+        rows=2, cols=2,
+        row_heights=[0.8, 0.2],
+        subplot_titles=("Aave (no Ψ×IR)", "Twyne (with Ψ×IR)", "", ""),
+        shared_xaxes=True,
+        vertical_spacing=0.05,
+        horizontal_spacing=0.12
+    )
+
+    # Row 1: Contour heatmaps
+    fig_sens.add_trace(go.Contour(
+        x=spread_range_sens * 100, y=hf_range_sens, z=aave_tliq,
+        colorscale='RdYlGn', zmin=0, zmax=365,
+        contours=dict(showlines=True, showlabels=True, start=30, end=365, size=60),
+        hovertemplate='Spread: %{x:.1f}%<br>HF: %{y:.2f}<br>Days: %{z:.0f}<extra>Aave</extra>',
+        showscale=False
+    ), row=1, col=1)
+
+    fig_sens.add_trace(go.Contour(
+        x=spread_range_sens * 100, y=hf_range_sens, z=twyne_tliq,
+        colorscale='RdYlGn', zmin=0, zmax=365,
+        contours=dict(showlines=True, showlabels=True, start=30, end=365, size=60),
+        hovertemplate='Spread: %{x:.1f}%<br>HF: %{y:.2f}<br>Days: %{z:.0f}<extra>Twyne</extra>',
+        colorbar=dict(title='Days', x=1.02)
+    ), row=1, col=2)
+
+    # Row 2: Historical spread distribution (negative spreads only)
+    spread_hist_data = df_filtered['spread_raw'].dropna() * 100  # Convert to %
+    spread_negative = spread_hist_data[spread_hist_data < 0]
+
+    # Calculate % of time in negative spread
+    pct_negative = len(spread_negative) / len(spread_hist_data) * 100
+
+    fig_sens.add_trace(go.Histogram(
+        x=spread_negative,
+        xbins=dict(start=-10, end=0, size=0.5),
+        histnorm='percent',
+        marker_color='rgba(100, 100, 100, 0.6)',
+        showlegend=False,
+        hovertemplate='Spread: %{x:.1f}%<br>Frequency: %{y:.1f}%<extra></extra>'
+    ), row=2, col=1)
+    fig_sens.add_trace(go.Histogram(
+        x=spread_negative,
+        xbins=dict(start=-10, end=0, size=0.5),
+        histnorm='percent',
+        marker_color='rgba(100, 100, 100, 0.6)',
+        showlegend=False,
+        hovertemplate='Spread: %{x:.1f}%<br>Frequency: %{y:.1f}%<extra></extra>'
+    ), row=2, col=2)
+
+    # Add annotation showing % of time negative
+    fig_sens.add_annotation(
+        x=-9, y=0.9, xref="x3", yref="y3 domain",
+        text=f"Negative {pct_negative:.0f}% of time",
+        showarrow=False, font=dict(size=9, color="gray")
+    )
+
+    # Safe zone marker
+    fig_sens.add_vline(x=0, line_dash="dot", line_color="green", row=1, col=1,
+                       annotation=dict(text="SAFE", font_color="green"))
+    twyne_safe_threshold = twyne_psi_val * ir_u_val * 100
+    fig_sens.add_vline(x=twyne_safe_threshold, line_dash="dot", line_color="green", row=1, col=2,
+                       annotation=dict(text="SAFE", font_color="green"))
+
+    # Current spread marker (on both rows)
+    current_spread_pct = (r_stake - r_borrow) * 100
+    for row in [1, 2]:
+        fig_sens.add_vline(x=current_spread_pct, line_dash="dash", line_color="blue", row=row, col=1,
+                           annotation=dict(text="Now", font_color="blue") if row == 1 else None)
+        fig_sens.add_vline(x=current_spread_pct, line_dash="dash", line_color="blue", row=row, col=2,
+                           annotation=dict(text="Now", font_color="blue") if row == 1 else None)
+
+    fig_sens.update_layout(height=420, margin=dict(l=60, r=80, t=60, b=40))
+    fig_sens.update_xaxes(title_text="Spread (%)", row=2, col=1)
+    fig_sens.update_xaxes(title_text="Spread (%)", row=2, col=2)
+    fig_sens.update_yaxes(title_text="Health Factor", row=1, col=1)
+    fig_sens.update_yaxes(title_text="Health Factor", row=1, col=2)
+    fig_sens.update_yaxes(showticklabels=False, title_text="", row=2, col=1)
+    fig_sens.update_yaxes(showticklabels=False, title_text="", row=2, col=2)
+
+    st.plotly_chart(fig_sens, use_container_width=True)
+
+    st.caption(f"Find your HF (y-axis) and spread (x-axis). Contour lines at 30, 90, 150... days. Twyne's safe zone shifts right by {twyne_psi_val * ir_u_val * 100:.2f}% due to Ψ×IR.")
+
+    # =========================================================================
+    # Chart: Aave vs Twyne - Survival by Health Factor
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("**Aave vs Twyne: Survival & Loss by Health Factor**")
+    st.caption("At each HF, both protocols run at their implied leverage (L = HF / (HF - LLTV)). Lower HF = higher leverage.")
+
+    # Spread bounds for analysis
+    spread_best = -0.01
+    spread_worst = -0.10
+
+    # Interest rate and Ψ for Twyne
+    ir_u = interest_rate(utilization)
+    twyne_psi = liq_ltv_max / (beta_safe * liq_ltv_clp) - liq_ltv_c / liq_ltv_clp
+    twyne_psi = max(twyne_psi, 0)
+
+    def compute_tliq_scalar(hf_val, r_net):
+        decay = 1 + r_net / (1 + r_borrow)
+        if r_net < 0 and decay > 0 and decay < 1:
+            return min(-365 * np.log(hf_val) / np.log(decay), 1000)
+        return 1000
+
+    # HF range (1.01 to 1.20)
+    hf_range_compare = np.linspace(1.01, 1.20, 80)
+
+    # Implied leverage at each HF: L = HF / (HF - LLTV)
+    # Only valid when HF > LLTV
+    aave_lev_from_hf = hf_range_compare / (hf_range_compare - liq_ltv_c)
+    twyne_lev_from_hf = hf_range_compare / (hf_range_compare - liq_ltv_max)
+
+    # Mask invalid (HF <= LLTV means infinite leverage)
+    aave_hf_valid_mask = hf_range_compare > liq_ltv_c
+    twyne_hf_valid_mask = hf_range_compare > liq_ltv_max
+
+    aave_hf_valid = hf_range_compare[aave_hf_valid_mask]
+    aave_lev_valid = aave_lev_from_hf[aave_hf_valid_mask]
+    twyne_hf_valid = hf_range_compare[twyne_hf_valid_mask]
+    twyne_lev_valid = twyne_lev_from_hf[twyne_hf_valid_mask]
+
+    # Compute T_liq and loss for each HF (using same spreads)
+    aave_tliq_best_hf = np.array([compute_tliq_scalar(hf, spread_best) for hf in aave_hf_valid])
+    aave_tliq_worst_hf = np.array([compute_tliq_scalar(hf, spread_worst) for hf in aave_hf_valid])
+    aave_loss_best_hf = -(aave_lev_valid * spread_best + r_borrow) * 100 / 365  # Daily
+    aave_loss_worst_hf = -(aave_lev_valid * spread_worst + r_borrow) * 100 / 365  # Daily
+
+    twyne_tliq_best_hf = np.array([compute_tliq_scalar(hf, spread_best - twyne_psi * ir_u) for hf in twyne_hf_valid])
+    twyne_tliq_worst_hf = np.array([compute_tliq_scalar(hf, spread_worst - twyne_psi * ir_u) for hf in twyne_hf_valid])
+    twyne_loss_best_hf = -(twyne_lev_valid * spread_best - twyne_lev_valid * twyne_psi * ir_u + r_borrow) * 100 / 365  # Daily
+    twyne_loss_worst_hf = -(twyne_lev_valid * spread_worst - twyne_lev_valid * twyne_psi * ir_u + r_borrow) * 100 / 365  # Daily
+
+    fig_hf = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=("Days to Liquidation", "Daily Loss %"),
+        horizontal_spacing=0.12
+    )
+
+    # Twyne band (blue, behind)
+    fig_hf.add_trace(
+        go.Scatter(x=twyne_hf_valid, y=twyne_tliq_best_hf, mode='lines',
+                   name='Twyne -1%', line=dict(color='#2196f3', width=2),
+                   hovertemplate='Twyne @ -1%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.0f} days<extra></extra>',
+                   customdata=twyne_lev_valid,
+                   legendgroup='twyne_hf', showlegend=True),
+        row=1, col=1
+    )
+    fig_hf.add_trace(
+        go.Scatter(x=twyne_hf_valid, y=twyne_tliq_worst_hf, mode='lines',
+                   name='Twyne -10%', line=dict(color='#2196f3', width=2, dash='dash'),
+                   hovertemplate='Twyne @ -10%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.0f} days<extra></extra>',
+                   customdata=twyne_lev_valid,
+                   fill='tonexty', fillcolor='rgba(33, 150, 243, 0.2)',
+                   legendgroup='twyne_hf', showlegend=True),
+        row=1, col=1
+    )
+    fig_hf.add_trace(
+        go.Scatter(x=twyne_hf_valid, y=-twyne_loss_best_hf, mode='lines',
+                   line=dict(color='#2196f3', width=2),
+                   hovertemplate='Twyne @ -1%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.3f}%/day<extra></extra>',
+                   customdata=twyne_lev_valid,
+                   legendgroup='twyne_hf', showlegend=False),
+        row=1, col=2
+    )
+    fig_hf.add_trace(
+        go.Scatter(x=twyne_hf_valid, y=-twyne_loss_worst_hf, mode='lines',
+                   line=dict(color='#2196f3', width=2, dash='dash'),
+                   hovertemplate='Twyne @ -10%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.3f}%/day<extra></extra>',
+                   customdata=twyne_lev_valid,
+                   fill='tonexty', fillcolor='rgba(33, 150, 243, 0.2)',
+                   legendgroup='twyne_hf', showlegend=False),
+        row=1, col=2
+    )
+
+    # Aave band (orange, on top)
+    fig_hf.add_trace(
+        go.Scatter(x=aave_hf_valid, y=aave_tliq_best_hf, mode='lines',
+                   name='Aave -1%', line=dict(color='#ff9800', width=2.5),
+                   hovertemplate='Aave @ -1%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.0f} days<extra></extra>',
+                   customdata=aave_lev_valid,
+                   legendgroup='aave_hf', showlegend=True),
+        row=1, col=1
+    )
+    fig_hf.add_trace(
+        go.Scatter(x=aave_hf_valid, y=aave_tliq_worst_hf, mode='lines',
+                   name='Aave -10%', line=dict(color='#ff9800', width=2.5, dash='dash'),
+                   hovertemplate='Aave @ -10%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.0f} days<extra></extra>',
+                   customdata=aave_lev_valid,
+                   fill='tonexty', fillcolor='rgba(255, 152, 0, 0.3)',
+                   legendgroup='aave_hf', showlegend=True),
+        row=1, col=1
+    )
+    fig_hf.add_trace(
+        go.Scatter(x=aave_hf_valid, y=-aave_loss_best_hf, mode='lines',
+                   line=dict(color='#ff9800', width=2.5),
+                   hovertemplate='Aave @ -1%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.3f}%/day<extra></extra>',
+                   customdata=aave_lev_valid,
+                   legendgroup='aave_hf', showlegend=False),
+        row=1, col=2
+    )
+    fig_hf.add_trace(
+        go.Scatter(x=aave_hf_valid, y=-aave_loss_worst_hf, mode='lines',
+                   line=dict(color='#ff9800', width=2.5, dash='dash'),
+                   hovertemplate='Aave @ -10%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.3f}%/day<extra></extra>',
+                   customdata=aave_lev_valid,
+                   fill='tonexty', fillcolor='rgba(255, 152, 0, 0.3)',
+                   legendgroup='aave_hf', showlegend=False),
+        row=1, col=2
+    )
+
+    fig_hf.update_layout(
+        height=350,
+        hovermode='x unified',
+        margin=dict(l=60, t=60, r=60),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5,
+            title="Protocol @ Spread"
+        )
+    )
+
+    fig_hf.update_yaxes(title_text="Days", row=1, col=1)
+    fig_hf.update_yaxes(title_text="Daily Loss % (down=worse)", row=1, col=2)
+    fig_hf.update_xaxes(title_text="Health Factor", row=1, col=1)
+    fig_hf.update_xaxes(title_text="Health Factor", row=1, col=2)
+
+    st.plotly_chart(fig_hf, use_container_width=True)
+
+    st.caption(f"At same HF, Aave has lower leverage (less risk, less loss). But Twyne can go to lower HF (down to {liq_ltv_max:.0%}) while Aave stops at {liq_ltv_c:.0%}. Hover shows implied leverage at each HF.")
+
+    # =========================================================================
+    # Chart: Twyne at Different Liquidation LTVs
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("**Twyne: Effect of Liquidation LTV Choice**")
+    st.caption("How does choosing different boosted liquidation LTVs affect survival time? Higher LLTV = higher leverage possible, but also higher Ψ×IR cost.")
+
+    # LLTV levels to compare
+    lltv_options = np.array([0.95, 0.96, 0.97, 0.98])
+    lltv_colors = ['#ff9800', '#8bc34a', '#03a9f4', '#9c27b0']  # Orange to purple gradient
+
+    # Fixed spread for comparison
+    comparison_spread = -0.02  # -2% spread
+
+    fig_lltv = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=("Days to Liquidation", "Daily Loss %"),
+        horizontal_spacing=0.12
+    )
+
+    for lltv, color in zip(lltv_options, lltv_colors):
+        # Compute Ψ at this LLTV
+        psi_lltv = lltv / (beta_safe * liq_ltv_clp) - liq_ltv_c / liq_ltv_clp
+        psi_lltv = max(psi_lltv, 0)
+        psi_cost = psi_lltv * ir_u
+
+        # HF range (valid for this LLTV)
+        hf_range_lltv = np.linspace(1.01, 1.20, 60)
+
+        # Implied leverage: L = HF / (HF - LLTV)
+        lev_at_hf = hf_range_lltv / (hf_range_lltv - lltv)
+
+        # T_liq at each HF (with Ψ×IR cost)
+        effective_spread = comparison_spread - psi_cost
+        tliq_at_hf = np.array([compute_tliq_scalar(hf, effective_spread) for hf in hf_range_lltv])
+
+        # Daily loss at each HF
+        loss_at_hf = -(lev_at_hf * comparison_spread - lev_at_hf * psi_cost + r_borrow) * 100 / 365
+
+        # Days to liquidation
+        fig_lltv.add_trace(
+            go.Scatter(x=hf_range_lltv, y=tliq_at_hf, mode='lines',
+                       name=f'LLTV {lltv*100:.0f}%',
+                       line=dict(color=color, width=2.5),
+                       hovertemplate=f'LLTV {lltv*100:.0f}%<br>HF %{{x:.2f}}: %{{y:.0f}} days<br>Ψ×IR: {psi_cost*100:.2f}%<extra></extra>',
+                       legendgroup=f'lltv_{lltv}'),
+            row=1, col=1
+        )
+
+        # Daily loss
+        fig_lltv.add_trace(
+            go.Scatter(x=hf_range_lltv, y=-loss_at_hf, mode='lines',
+                       line=dict(color=color, width=2.5),
+                       hovertemplate=f'LLTV {lltv*100:.0f}%<br>HF %{{x:.2f}}: %{{y:.3f}}%/day<extra></extra>',
+                       legendgroup=f'lltv_{lltv}', showlegend=False),
+            row=1, col=2
+        )
+
+    fig_lltv.update_layout(
+        height=350,
+        hovermode='x unified',
+        margin=dict(l=60, t=60, r=60),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5,
+            title="Boosted Liq. LTV"
+        )
+    )
+
+    fig_lltv.update_yaxes(title_text="Days", row=1, col=1)
+    fig_lltv.update_yaxes(title_text="Daily Loss % (down=worse)", row=1, col=2)
+    fig_lltv.update_xaxes(title_text="Health Factor", row=1, col=1)
+    fig_lltv.update_xaxes(title_text="Health Factor", row=1, col=2)
+
+    st.plotly_chart(fig_lltv, use_container_width=True)
+
+    st.caption(f"At spread = {comparison_spread*100:.0f}%. Higher LLTV lets you run at lower HF (more leverage), but Ψ×IR cost increases. Trade-off: more leverage vs shorter survival time.")
 
 # =============================================================================
 # Footer
