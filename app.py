@@ -23,7 +23,7 @@ from twyne_looping import (
 )
 from twyne_looping.economics import compute_yield_grid, compute_days_to_liq_grid
 from twyne_looping.backtest import run_backtest, run_multi_leverage_backtest
-from twyne_looping.live_rates import fetch_live_rates, LiveRates, AVAILABLE_CHAINS
+# Live rates API removed - using manual inputs only
 
 # =============================================================================
 # Page Config
@@ -94,106 +94,17 @@ clp_asset = "wstETH"
 default_underlying_lltv = 0.93  # Aave e-mode (same for C and CLP)
 default_twyne_lltv_max = 0.97  # Twyne max boosted LLTV
 
-# =============================================================================
-# Rate Source (logic only - UI moved to Yield Analysis tab)
-# =============================================================================
-
-# Initialize session state for rates
-if 'live_rates' not in st.session_state:
-    st.session_state.live_rates = None
-if 'live_rates_chain' not in st.session_state:
-    st.session_state.live_rates_chain = selected_chain
-if 'rate_source' not in st.session_state:
-    st.session_state.rate_source = "Current"
-if 'custom_r_steth_stake' not in st.session_state:
-    st.session_state.custom_r_steth_stake = 3.5
-if 'custom_r_steth_lend' not in st.session_state:
-    st.session_state.custom_r_steth_lend = 0.1
-if 'custom_r_borrow' not in st.session_state:
-    st.session_state.custom_r_borrow = 2.5
-
-# Auto-fetch live rates if not cached
-if st.session_state.live_rates is None or st.session_state.live_rates_chain != selected_chain:
-    st.session_state.live_rates = fetch_live_rates(selected_chain)
-    st.session_state.live_rates_chain = selected_chain
-
-# Determine rates based on source
-if st.session_state.rate_source == "Current" and st.session_state.live_rates is not None:
-    live = st.session_state.live_rates
-    r_steth_stake = live.steth_staking_rate
-    r_steth_lend = live.steth_supply_rate
-    r_stake = live.r_stake
-    r_borrow = live.eth_borrow_rate
-else:
-    r_steth_stake = st.session_state.custom_r_steth_stake / 100
-    r_steth_lend = st.session_state.custom_r_steth_lend / 100
-    r_stake = r_steth_stake + r_steth_lend
-    r_borrow = st.session_state.custom_r_borrow / 100
-
-# =============================================================================
-# LTVs & Safety Buffer
-# =============================================================================
-with st.sidebar.container(border=True):
-    st.caption("**LTVs & Safety Buffer**")
-    underlying_lltv = st.slider(
-        "Underlying LLTV (λ̃_e) (%)",
-        min_value=70, max_value=96, value=93, step=1,
-        help="Aave e-mode liquidation threshold (same for C and CLP)",
-        key="underlying_lltv"
-    ) / 100
-
-    twyne_lltv_max = st.slider(
-        "Twyne Max LLTV (λ̃_t^max) (%)",
-        min_value=90, max_value=99, value=97, step=1,
-        help="Twyne's maximum boosted liquidation LTV",
-        key="twyne_liq_ltv_max"
-    ) / 100
-
-    beta_safe = st.slider(
-        "Safety Buffer (β_safe)",
-        min_value=0.85, max_value=1.00, value=1.00, step=0.01,
-        help="Safety buffer from whitepaper Eq. 7",
-        key="twyne_beta_safe"
-    )
-
-st.sidebar.divider()
-
-# =============================================================================
-# CLP Utilization
-# =============================================================================
-with st.sidebar.container(border=True):
-    st.caption("**CLP Utilization**")
-    utilization = st.slider(
-        "Utilization (u) (%)",
-        min_value=0, max_value=100, value=95, step=5,
-        help="Credit LP pool utilization - affects IR(u)",
-        key="twyne_utilization"
-    ) / 100
-
-st.sidebar.divider()
-
-# =============================================================================
-# Interest Rate Model
-# =============================================================================
-with st.sidebar.container(border=True):
-    st.caption("**Interest Rate Model**")
-    ir_I_min = st.slider("I_min (%)", min_value=0.0, max_value=5.0, value=0.0, step=0.1, key="ir_I_min") / 100
-    ir_I_max = st.slider("I_max (%)", min_value=0.1, max_value=5.0, value=0.5, step=0.1, key="ir_I_max") / 100
-    ir_I_0 = st.slider("I_0 (%)", min_value=0.0, max_value=float(st.session_state.get("ir_I_max", 0.5)), value=min(0.8, float(st.session_state.get("ir_I_max", 0.5))), step=0.1, key="ir_I_0") / 100
-    ir_u_0 = st.slider("u_0 (%)", min_value=50, max_value=99, value=90, step=1, key="ir_u_0") / 100
-    ir_gamma = st.slider("γ (curvature)", min_value=1, max_value=64, value=32, step=1, key="ir_gamma")
-
-# Get params from session state
+# Get params from session state first (needed for Rates calculations)
 underlying_lltv = st.session_state.get("underlying_lltv", 93) / 100
-liq_ltv_c = underlying_lltv  # Same for collateral
-liq_ltv_clp = underlying_lltv  # Same for CLP
+liq_ltv_c = underlying_lltv
+liq_ltv_clp = underlying_lltv
 liq_ltv_max = st.session_state.get("twyne_liq_ltv_max", 97) / 100
 utilization = st.session_state.get("twyne_utilization", 95) / 100
 beta_safe = st.session_state.get("twyne_beta_safe", 1.00)
 ir_I_min = st.session_state.get("ir_I_min", 0.0) / 100
 ir_I_0 = st.session_state.get("ir_I_0", 0.8) / 100
 ir_u_0 = st.session_state.get("ir_u_0", 90) / 100
-ir_I_max = st.session_state.get("ir_I_max", 0.5) / 100
+ir_I_max = st.session_state.get("ir_I_max", 5.0) / 100
 ir_gamma = st.session_state.get("ir_gamma", 32)
 
 # Store parameters for use in calculations
@@ -210,6 +121,79 @@ params = {
 
 # Calculate interest rate (used across multiple tabs)
 ir_u = interest_rate(utilization, **{k: params[k] for k in ['I_min', 'I_0', 'u_0', 'I_max', 'gamma']})
+
+# Credit cost (Ψ × IR(u)) at max LLTV
+psi_max = liq_ltv_max / (beta_safe * liq_ltv_clp) - liq_ltv_c / liq_ltv_clp
+psi_max = max(psi_max, 0)
+
+# CLP yield
+clp_credit_yield = utilization * ir_u
+
+# =============================================================================
+# Rates (Expander) - At top with all derived values
+# =============================================================================
+with st.sidebar.expander("📊 Rates", expanded=True):
+    r_steth_stake = st.number_input("stETH Staking %", min_value=0.0, value=3.5, step=0.5, key="r_steth_stake") / 100
+    r_steth_lend = st.number_input("stETH Lending %", min_value=0.0, value=0.1, step=0.1, key="r_steth_lend") / 100
+    r_borrow = st.number_input("ETH Borrow %", min_value=0.0, value=2.5, step=0.5, key="r_borrow") / 100
+    r_stake = r_steth_stake + r_steth_lend
+    spread = r_stake - r_borrow
+    clp_total_yield = clp_credit_yield + r_stake
+
+    st.caption(f"**Total:** {r_stake*100:.2f}% | **Spread:** {spread*100:.2f}% | **CLP Yield:** {clp_total_yield*100:.2f}%")
+
+    st.divider()
+    st.caption("**Net Looping Yield (Aave → Twyne)**")
+    for hf in [1.10, 1.05, 1.01]:
+        lambda_t_aave = liq_ltv_c / hf
+        lambda_t_twyne = liq_ltv_max / hf
+        L_aave = 1.0 / (1.0 - lambda_t_aave)
+        L_twyne = 1.0 / (1.0 - lambda_t_twyne)
+        aave_yield = (L_aave * r_stake - (L_aave - 1) * r_borrow) * 100
+        twyne_yield = (L_twyne * r_stake - (L_twyne - 1) * r_borrow - L_twyne * psi_max * ir_u) * 100
+        st.text(f"HF {hf:.2f}: {aave_yield:.1f}% ({L_aave:.0f}x) → {twyne_yield:.1f}% ({L_twyne:.0f}x)")
+
+# =============================================================================
+# LTVs & Safety Buffer (Expander)
+# =============================================================================
+with st.sidebar.expander("🎯 LTVs & Safety Buffer", expanded=False):
+    st.slider(
+        "Underlying LLTV %",
+        min_value=70, max_value=96, value=93, step=1,
+        help="Aave e-mode liquidation threshold (same for C and CLP)",
+        key="underlying_lltv"
+    )
+    st.slider(
+        "Twyne Max LLTV %",
+        min_value=90, max_value=99, value=97, step=1,
+        help="Twyne's maximum boosted liquidation LTV",
+        key="twyne_liq_ltv_max"
+    )
+    st.slider(
+        "Safety Buffer",
+        min_value=0.85, max_value=1.00, value=1.00, step=0.01,
+        help="Safety buffer for credit reservation",
+        key="twyne_beta_safe"
+    )
+
+# =============================================================================
+# Interest Rate Model (Expander) - includes CLP Utilization
+# =============================================================================
+with st.sidebar.expander("📈 Interest Rate Model", expanded=False):
+    st.slider(
+        "CLP Utilization %",
+        min_value=0, max_value=100, value=95, step=5,
+        help="Credit LP pool utilization - affects IR(u)",
+        key="twyne_utilization"
+    )
+    col1, col2 = st.columns(2)
+    with col1:
+        st.number_input("Min Rate %", min_value=0.0, value=0.0, step=0.5, key="ir_I_min")
+        st.number_input("Rate at Kink %", min_value=0.0, value=0.8, step=0.5, key="ir_I_0")
+        st.number_input("Kink Utilization %", min_value=50.0, max_value=99.0, value=90.0, step=1.0, key="ir_u_0")
+    with col2:
+        st.number_input("Max Rate %", min_value=0.1, value=5.0, step=1.0, key="ir_I_max")
+        st.number_input("Curvature", min_value=1, value=32, step=1, key="ir_gamma")
 
 # Calculate leverage bounds (used across multiple tabs)
 L_aave = 1.0 / (1.0 - liq_ltv_c)  # ~14x for 93% e-mode
@@ -283,7 +267,7 @@ st.title("🔄 Twyne stETH-ETH Looping Economics")
 tab1, tab2, tab3 = st.tabs([
     "📈 Backtest & History",
     "📊 Yield Analysis",
-    "⚖️ Leverage Risk Analysis"
+    "⚖️ Liquidation Analysis"
 ])
 
 # =============================================================================
@@ -292,62 +276,7 @@ tab1, tab2, tab3 = st.tabs([
 
 with tab2:
     st.header("Yield Analysis")
-
-    # -------------------------------------------------------------------------
-    # Rate Source Controls
-    # -------------------------------------------------------------------------
-    rate_col1, rate_col2 = st.columns([1, 2])
-
-    with rate_col1:
-        rate_source = st.radio(
-            "Rate Source",
-            ["Current", "Custom"],
-            index=0 if st.session_state.rate_source == "Current" else 1,
-            horizontal=True,
-            key="rate_source_radio"
-        )
-        st.session_state.rate_source = rate_source
-
-        if rate_source == "Current":
-            if st.button("🔄 Refresh Rates"):
-                st.session_state.live_rates = fetch_live_rates(selected_chain)
-                st.rerun()
-
-    with rate_col2:
-        if rate_source == "Custom":
-            custom_cols = st.columns(3)
-            with custom_cols[0]:
-                st.session_state.custom_r_steth_stake = st.number_input(
-                    "stETH Staking %", min_value=0.0, max_value=10.0,
-                    value=st.session_state.custom_r_steth_stake, step=0.1, format="%.2f"
-                )
-            with custom_cols[1]:
-                st.session_state.custom_r_steth_lend = st.number_input(
-                    "stETH Lending %", min_value=0.0, max_value=5.0,
-                    value=st.session_state.custom_r_steth_lend, step=0.05, format="%.2f"
-                )
-            with custom_cols[2]:
-                st.session_state.custom_r_borrow = st.number_input(
-                    "ETH Borrow %", min_value=0.0, max_value=25.0,
-                    value=st.session_state.custom_r_borrow, step=0.1, format="%.2f"
-                )
-            # Update rates from custom values
-            r_steth_stake = st.session_state.custom_r_steth_stake / 100
-            r_steth_lend = st.session_state.custom_r_steth_lend / 100
-            r_stake = r_steth_stake + r_steth_lend
-            r_borrow = st.session_state.custom_r_borrow / 100
-
-    # Rate metrics display
-    spread = r_stake - r_borrow
-    metric_cols = st.columns(5)
-    metric_cols[0].metric("stETH Staking (Lido)", f"{r_steth_stake*100:.2f}%")
-    metric_cols[1].metric("stETH Lending (Aave)", f"{r_steth_lend*100:.2f}%")
-    metric_cols[2].metric("Total stETH Yield", f"{r_stake*100:.2f}%", help="Staking + Lending")
-    metric_cols[3].metric("ETH Borrow (Aave)", f"{r_borrow*100:.2f}%")
-    metric_cols[4].metric("Net Spread", f"{spread*100:.2f}%",
-                          delta="Positive" if spread > 0 else "Negative")
-
-    st.divider()
+    st.caption("ℹ️ Uses: Rates, LTVs, Interest Rate Model")
 
     # -------------------------------------------------------------------------
     # Yield & Days to Liquidation Heatmaps
@@ -406,9 +335,6 @@ with tab2:
             st.session_state.hf_max = new_hf_max
             st.rerun()
 
-    # Always show both heatmaps side by side
-    col1, col2 = st.columns(2)
-
     # Aave threshold in LTV terms (no Twyne boost needed below this)
     aave_lltv = liq_ltv_c  # underlying LLTV (e.g., 93%)
 
@@ -416,175 +342,253 @@ with tab2:
     x_values = liq_ltv_values * 100  # e.g., [92, 93.5, 95, 96.5, 98]
     y_values = hf_values  # e.g., [1.20, 1.18, ..., 1.00]
 
-    with col1:
-        # Compute display values based on mode
-        yield_pct = yield_grid * 100
+    # Compute display values based on mode
+    yield_pct = yield_grid * 100
 
-        if yield_mode == "Delta (vs Aave)":
-            # Subtract the Aave baseline (first column) from each row
-            aave_baseline = yield_pct[:, 0:1]  # First column (Aave max LTV)
-            display_values = yield_pct - aave_baseline
-            title = "**Extra Yield vs Aave**"
-            caption = "Additional yield from Twyne vs Aave max leverage. Shows the benefit of boosted liquidation LTV."
-            colorbar_title = "Extra %"
-            text_annotations = [[f"+{val:.1f}%" if val >= 0 else f"{val:.1f}%" for val in row] for row in display_values]
+    if yield_mode == "Delta (vs Aave)":
+        # Subtract the Aave baseline (first column) from each row
+        aave_baseline = yield_pct[:, 0:1]  # First column (Aave max LTV)
+        display_values = yield_pct - aave_baseline
+        yield_title = "Extra Yield vs Aave"
+        text_annotations = [[f"+{val:.1f}%" if val >= 0 else f"{val:.1f}%" for val in row] for row in display_values]
+    else:
+        display_values = yield_pct
+        yield_title = "Net Yield Heatmap"
+        text_annotations = [[f"{val:.1f}%" for val in row] for row in display_values]
+
+    # Identify cells with positive yield (SAFE cells - no liquidation risk)
+    safe_mask = (yield_grid > 0) | np.isinf(dtl_grid) | (dtl_grid > 9999)
+
+    # Don't cap days - show actual values, but handle infinity
+    dtl_display = dtl_grid.copy()
+    dtl_display[np.isinf(dtl_display)] = np.nan  # Will be shown as SAFE
+    dtl_display[safe_mask] = np.nan  # SAFE cells
+
+    # Create text annotations for DTL: "SAFE" for positive yield/infinite, days for others
+    dtl_text = []
+    for i, row in enumerate(dtl_grid):
+        text_row = []
+        for j, val in enumerate(row):
+            if safe_mask[i, j]:
+                text_row.append("SAFE")
+            elif val > 9999:
+                text_row.append("SAFE")
+            else:
+                text_row.append(f"{int(val)}d")
+        dtl_text.append(text_row)
+
+    # Create masked arrays for separate plotting
+    dtl_risk = dtl_display.copy().astype(float)
+    dtl_risk[safe_mask] = np.nan
+    dtl_safe = np.where(safe_mask, 1.0, np.nan)
+
+    # Custom colorscale for yield - relative to holding stETH (r_stake)
+    # Red = worse than holding, White = same as holding, Blue = better than holding
+    min_val = np.nanmin(display_values)
+    max_val = np.nanmax(display_values)
+    hold_yield = r_stake * 100  # stETH holding yield in %
+
+    # Calculate where hold_yield falls in the data range
+    if max_val > min_val:
+        if hold_yield <= min_val:
+            # All values above holding - all blue gradient
+            custom_colorscale = [
+                [0.0, '#f0f9ff'],    # Very light blue (lowest, at holding)
+                [0.25, '#bae6fd'],   # Light sky blue
+                [0.5, '#7dd3fc'],    # Sky blue
+                [0.75, '#38bdf8'],   # Bright blue
+                [1.0, '#0284c7'],    # Strong blue (highest)
+            ]
+        elif hold_yield >= max_val:
+            # All values below holding - all red gradient
+            custom_colorscale = [
+                [0.0, '#991b1b'],    # Dark red (most below holding)
+                [0.25, '#dc2626'],   # Red
+                [0.5, '#f87171'],    # Light red
+                [0.75, '#fecaca'],   # Very light red
+                [1.0, '#fff7f7'],    # Almost white (at holding)
+            ]
         else:
-            display_values = yield_pct
-            title = "**Net Yield Heatmap**"
-            caption = "Theoretical yield at different Health Factors and Liquidation LTVs. Green = profitable, Red = losing money."
-            colorbar_title = "Yield %"
-            text_annotations = [[f"{val:.1f}%" for val in row] for row in display_values]
+            # Mixed: diverging red-white-blue centered at hold_yield
+            hold_pos = (hold_yield - min_val) / (max_val - min_val)
+            hold_pos = max(0.1, min(0.9, hold_pos))
+            custom_colorscale = [
+                [0.0, '#b91c1c'],                           # Red (most below holding)
+                [hold_pos * 0.5, '#f87171'],                # Light red
+                [hold_pos, '#ffffff'],                       # White (at holding yield)
+                [hold_pos + (1-hold_pos) * 0.5, '#7dd3fc'], # Light blue
+                [1.0, '#0284c7'],                           # Blue (most above holding)
+            ]
+    else:
+        # All same value
+        custom_colorscale = [[0.0, '#ffffff'], [1.0, '#ffffff']]
 
-        st.markdown(title)
-        st.caption(caption)
+    # Create combined figure with subplots (linked axes for zoom/pan sync)
+    fig_combined = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=(yield_title, "Days to Liquidation"),
+        shared_xaxes=True,
+        shared_yaxes=True,
+        horizontal_spacing=0.08
+    )
 
-        # Custom colorscale: red -> yellow -> light green -> green -> teal -> blue
-        custom_colorscale = [
-            [0.0, '#d73027'],    # Dark red (most negative)
-            [0.3, '#fc8d59'],    # Orange-red
-            [0.45, '#fee08b'],   # Yellow (near zero negative)
-            [0.5, '#ffffbf'],    # Light yellow (zero)
-            [0.55, '#d9ef8b'],   # Light green (near zero positive)
-            [0.7, '#91cf60'],    # Green
-            [0.85, '#1a9850'],   # Dark green
-            [1.0, '#006837'],    # Deep green (most positive)
-        ]
+    # Left: Yield heatmap with explicit min/max for contrast
+    fig_combined.add_trace(go.Heatmap(
+        z=display_values,
+        x=x_values,
+        y=y_values,
+        text=text_annotations,
+        texttemplate="%{text}",
+        textfont={"size": 10, "color": "black"},
+        colorscale=custom_colorscale,
+        zmin=min_val,
+        zmax=max_val,
+        zmid=0 if min_val < 0 < max_val else None,
+        showscale=False,
+        hovertemplate="Liq LTV: %{x:.1f}%<br>HF: %{y:.2f}<br>Yield: %{z:.2f}%<extra></extra>",
+    ), row=1, col=1)
 
-        fig_yield = go.Figure(data=go.Heatmap(
-            z=display_values,
-            x=x_values,
-            y=y_values,
-            text=text_annotations,
-            texttemplate="%{text}",
-            textfont={"size": 10},
-            colorscale=custom_colorscale,
-            zmid=0,  # Center at 0 so negative=red, positive=green
-            colorbar=dict(title=colorbar_title),
-            hovertemplate="Liq LTV: %{x:.1f}%<br>HF: %{y:.2f}<br>Value: %{z:.2f}%<extra></extra>",
-        ))
+    # Right: DTL risk heatmap (red-yellow-green)
+    # Dynamic zmax based on actual non-safe values
+    valid_dtl = dtl_risk[~np.isnan(dtl_risk)]
+    dtl_zmax = max(365, np.nanmax(valid_dtl)) if len(valid_dtl) > 0 else 365
+    fig_combined.add_trace(go.Heatmap(
+        z=dtl_risk,
+        x=x_values,
+        y=y_values,
+        colorscale='RdYlGn',
+        zmin=0,
+        zmax=dtl_zmax,
+        hovertemplate="Liq LTV: %{x:.1f}%<br>HF: %{y:.2f}<br>Days: %{z:.0f}<extra></extra>",
+        showscale=False,
+    ), row=1, col=2)
 
-        # Add vertical line for Aave threshold at left edge
-        aave_x = aave_lltv * 100  # e.g., 93
-        fig_yield.add_vline(
-            x=aave_x + 0.3,  # Slightly to the right so it doesn't overlap first column
-            line=dict(color="blue", width=3, dash="dash"),
-            annotation_text=f"Aave max ({aave_x:.0f}%)",
-            annotation_position="top right",
-            annotation=dict(font_color="blue", font_size=11),
-        )
+    # Right: DTL safe heatmap (white for safe cells)
+    fig_combined.add_trace(go.Heatmap(
+        z=dtl_safe,
+        x=x_values,
+        y=y_values,
+        colorscale=[[0, '#ffffff'], [1, '#ffffff']],
+        zmin=0,
+        zmax=1,
+        hovertemplate="Liq LTV: %{x:.1f}%<br>HF: %{y:.2f}<br><b>SAFE</b><extra></extra>",
+        showscale=False,
+    ), row=1, col=2)
 
-        fig_yield.update_layout(
-            xaxis_title="Boosted Liquidation LTV (λ̃_t) %",
-            yaxis_title="Health Factor",
-            height=400,
-            margin=dict(t=20),
-            xaxis=dict(
-                tickmode='array',
-                tickvals=x_values,
-                ticktext=[f"{v:.1f}" for v in x_values],
-            ),
-            yaxis=dict(
-                range=[hf_min - 0.01, hf_max + 0.01],
-                tickmode='array',
-                tickvals=y_values,
-                ticktext=[f"{v:.2f}" for v in y_values],
-            ),
-        )
-        st.plotly_chart(fig_yield, use_container_width=True)
-
-    with col2:
-        st.markdown("**Days to Liquidation**")
-        st.caption("Time until HF reaches 1.0 (liquidation). Purple = SAFE (yield covers costs). Lower = riskier.")
-
-        # Cap days values for display (infinite -> 365)
-        dtl_display = np.clip(dtl_grid, 0, 365)
-        dtl_display[np.isinf(dtl_grid)] = 365
-
-        # Identify cells with positive yield (SAFE cells)
-        safe_mask = yield_grid > 0
-
-        # Create text annotations: "Safe" for positive yield, days for negative
-        dtl_text = []
-        for i, row in enumerate(dtl_display):
-            text_row = []
-            for j, val in enumerate(row):
-                if safe_mask[i, j]:
-                    text_row.append("Safe")
-                else:
-                    text_row.append(f"{int(val)}d")
-            dtl_text.append(text_row)
-
-        # Create masked arrays for separate plotting
-        dtl_risk = dtl_display.copy().astype(float)
-        dtl_risk[safe_mask] = np.nan
-        dtl_safe = np.where(safe_mask, 1.0, np.nan)
-
-        fig_dtl = go.Figure()
-
-        # Layer 1: Risk heatmap (red-yellow-green for cells with negative yield)
-        fig_dtl.add_trace(go.Heatmap(
-            z=dtl_risk,
-            x=x_values,
-            y=y_values,
-            colorscale='RdYlGn',
-            zmin=0,
-            zmax=365,
-            colorbar=dict(title="Days", x=1.02),
-            hovertemplate="Liq LTV: %{x:.1f}%<br>HF: %{y:.2f}<br>Days: %{z:.0f}<extra></extra>",
-            showscale=True,
-        ))
-
-        # Layer 2: SAFE heatmap (purple for cells with positive yield)
-        fig_dtl.add_trace(go.Heatmap(
-            z=dtl_safe,
-            x=x_values,
-            y=y_values,
-            colorscale=[[0, '#7B2D8E'], [1, '#7B2D8E']],  # Solid purple
-            zmin=0,
-            zmax=1,
-            hovertemplate="Liq LTV: %{x:.1f}%<br>HF: %{y:.2f}<br><b>SAFE</b><extra></extra>",
-            showscale=False,
-        ))
-
-        # Add text annotations as a separate layer
-        for i, hf in enumerate(y_values):
-            for j, ltv in enumerate(x_values):
-                fig_dtl.add_annotation(
+    # Add text annotations for DTL - only for non-safe cells
+    for i, hf in enumerate(y_values):
+        for j, ltv in enumerate(x_values):
+            if not safe_mask[i, j]:
+                fig_combined.add_annotation(
                     x=ltv,
                     y=hf,
-                    text=dtl_text[i][j],
+                    text=f"{int(dtl_display[i, j])}d",
                     showarrow=False,
-                    font=dict(size=10, color="black" if not safe_mask[i, j] else "white"),
+                    font=dict(size=10, color="black"),
+                    xref='x2',
+                    yref='y2'
                 )
 
-        # Add vertical line for Aave threshold at left edge
-        fig_dtl.add_vline(
-            x=aave_x + 0.3,  # Slightly to the right so it doesn't overlap first column
-            line=dict(color="blue", width=3, dash="dash"),
-            annotation_text=f"Aave max ({aave_x:.0f}%)",
-            annotation_position="top right",
-            annotation=dict(font_color="blue", font_size=11),
+    # Add single "SAFE" label in the center of safe region
+    if np.any(safe_mask):
+        safe_rows, safe_cols = np.where(safe_mask)
+        center_row = int(np.mean(safe_rows))
+        center_col = int(np.mean(safe_cols))
+        fig_combined.add_annotation(
+            x=x_values[center_col],
+            y=y_values[center_row],
+            text="<b>SAFE</b>",
+            showarrow=False,
+            font=dict(size=14, color="#006837"),
+            xref='x2',
+            yref='y2'
         )
 
-        fig_dtl.update_layout(
-            xaxis_title="Boosted Liquidation LTV (λ̃_t) %",
-            yaxis_title="Health Factor",
-            height=400,
-            margin=dict(t=20),
-            showlegend=False,
-            xaxis=dict(
-                tickmode='array',
-                tickvals=x_values,
-                ticktext=[f"{v:.1f}" for v in x_values],
-            ),
-            yaxis=dict(
-                range=[hf_min - 0.01, hf_max + 0.01],
-                tickmode='array',
-                tickvals=y_values,
-                ticktext=[f"{v:.2f}" for v in y_values],
-            ),
+    # Add Aave column border and label
+    # Calculate column width (half distance to next column)
+    col_width = (x_values[1] - x_values[0]) / 2 if len(x_values) > 1 else 0.5
+    aave_x = x_values[0]  # First column is Aave
+    hf_step = abs(y_values[1] - y_values[0]) if len(y_values) > 1 else 0.02
+
+    for col_idx, xref in enumerate(['x', 'x2'], 1):
+        yref = 'y' if col_idx == 1 else 'y2'
+        # Add rectangle border around first column (within cell boundaries)
+        fig_combined.add_shape(
+            type="rect",
+            x0=aave_x - col_width * 0.95,
+            x1=aave_x + col_width * 0.95,
+            y0=y_values[-1] - hf_step * 0.45,  # Bottom edge of lowest cell
+            y1=y_values[0] + hf_step * 0.45,   # Top edge of highest cell
+            line=dict(color="#ef6c00", width=4),
+            fillcolor="rgba(0,0,0,0)",
+            xref=xref,
+            yref=yref,
+            layer="above",
         )
-        st.plotly_chart(fig_dtl, use_container_width=True)
+
+    # Add "Aave" label above first column for both subplots (using paper coordinates)
+    # Calculate x position in paper coordinates
+    aave_rel_x = (aave_x - (x_values[0] - col_width)) / (x_values[-1] + col_width - (x_values[0] - col_width))
+
+    # Left subplot (0 to ~0.48)
+    fig_combined.add_annotation(
+        x=aave_rel_x * 0.45,
+        y=1.08,
+        text="<b>Aave</b>",
+        showarrow=False,
+        font=dict(size=13, color="#ef6c00"),
+        xref='paper',
+        yref='paper',
+    )
+
+    # Right subplot (0.52 to 1.0)
+    fig_combined.add_annotation(
+        x=0.52 + aave_rel_x * 0.45,
+        y=1.08,
+        text="<b>Aave</b>",
+        showarrow=False,
+        font=dict(size=13, color="#ef6c00"),
+        xref='paper',
+        yref='paper',
+    )
+
+    fig_combined.update_layout(
+        height=400,
+        margin=dict(t=50, b=60),  # More top margin for label
+        showlegend=False,
+        hovermode='closest',
+    )
+
+    # Update axes
+    fig_combined.update_xaxes(
+        title_text="Boosted Liquidation LTV %",
+        tickmode='array',
+        tickvals=x_values,
+        ticktext=[f"{v:.1f}" for v in x_values],
+        row=1, col=1
+    )
+    fig_combined.update_xaxes(
+        title_text="Boosted Liquidation LTV %",
+        tickmode='array',
+        tickvals=x_values,
+        ticktext=[f"{v:.1f}" for v in x_values],
+        row=1, col=2
+    )
+    fig_combined.update_yaxes(
+        title_text="Health Factor",
+        range=[y_values[-1] - hf_step * 0.5, y_values[0] + hf_step * 0.5],
+        tickmode='array',
+        tickvals=y_values,
+        ticktext=[f"{v:.2f}" for v in y_values],
+        row=1, col=1
+    )
+    fig_combined.update_yaxes(
+        range=[y_values[-1] - hf_step * 0.5, y_values[0] + hf_step * 0.5],
+        row=1, col=2
+    )
+
+    st.caption("Yield heatmap (left) and days to liquidation (right). Days to liquidation only applies when spread is negative. SAFE = positive yield, no liquidation risk.")
+    st.plotly_chart(fig_combined, use_container_width=True)
 
     # =========================================================================
     # Twyne Credit Efficiency
@@ -593,43 +597,46 @@ with tab2:
     L_aave = 1.0 / (1.0 - liq_ltv_c)  # ~14x for 93% e-mode
     aave_max_int = int(L_aave)
     twyne_max_int = int(L_max_global)
-    ref_hf = 1.05
 
-    # Helper to calculate yield for a leverage level
-    def calc_yield_for_leverage(L, r_stk, r_brw):
-        """Calculate net yield for leverage L at given rates."""
-        lt = ltv_from_leverage(L)
-        llt = lt * ref_hf
+    # HF values for multi-line charts
+    hf_values = [1.07, 1.10]
+    hf_colors = {1.07: '#4caf50', 1.10: '#2196f3'}
+    ref_hf = 1.05  # Default reference HF for single-HF calculations
+
+    # Helper to calculate yield for a leverage level at a given HF
+    def calc_yield_for_leverage_hf(L, r_stk, r_brw, hf):
+        """Calculate net yield for leverage L at given rates and HF."""
         is_twyne = L > L_aave
         if is_twyne:
-            p = psi(llt, params['beta_safe'], params['liq_ltv_clp'], params['liq_ltv_c'])
+            lt = (L - 1) / L
+            llt_needed = min(lt * hf, liq_ltv_max)
+            p = max(0, psi(llt_needed, params['beta_safe'], params['liq_ltv_clp'], params['liq_ltv_c']))
             credit_cost = L * p * ir_u
         else:
-            p = 0
             credit_cost = 0
         return (L * r_stk - (L - 1) * r_brw - credit_cost) * 100
+
+    def calc_yield_for_leverage(L, r_stk, r_brw):
+        return calc_yield_for_leverage_hf(L, r_stk, r_brw, ref_hf)
+
     st.markdown("**Twyne Credit Efficiency**")
-    st.caption("How yield components change as you increase leverage from Aave max to Twyne max.")
+    st.caption("How yield components change as you increase leverage. ℹ️ Uses: Rates, LTVs, IR Model")
 
     aave_L = aave_max_int
     aave_max_yield = calc_yield_for_leverage(aave_L, r_stake, r_borrow)
 
-    # Generate data for all leverage levels from 1x to Twyne max
+    # Generate data for all leverage levels from 1x to Twyne max (for waterfall)
     leverage_range = np.arange(1, twyne_max_int + 1)
     all_data = {}
 
     for L in leverage_range:
-        # Calculate yield (Aave formula for all, no credit cost below Aave max)
         L_yield = calc_yield_for_leverage(L, r_stake, r_borrow)
 
-        # Credit cost = L × Ψ × IR(u)
-        # - Scales with L (total collateral in the leveraged position)
-        # - Ψ is small because Twyne only needs a little credit to boost the liquidation LTV
         if L > aave_L:
             extra_leverage = L - aave_L
-            lt = ltv_from_leverage(L)
-            llt = lt * ref_hf
-            p = psi(llt, params['beta_safe'], params['liq_ltv_clp'], params['liq_ltv_c'])
+            lt = (L - 1) / L
+            llt_needed = min(lt * ref_hf, liq_ltv_max)
+            p = max(0, psi(llt_needed, params['beta_safe'], params['liq_ltv_clp'], params['liq_ltv_c']))
             credit_cost = L * p * ir_u * 100
         else:
             credit_cost = 0
@@ -638,7 +645,6 @@ with tab2:
         extra_yield = L_yield - aave_max_yield
         gross_extra = extra_yield + credit_cost
         efficiency_ratio = gross_extra / credit_cost if credit_cost > 0 else float('inf')
-
         breakeven_spread = (credit_cost / 100) / extra_leverage if extra_leverage > 0 else 0
 
         all_data[L] = {
@@ -650,199 +656,247 @@ with tab2:
             'breakeven': breakeven_spread,
         }
 
-    # For waterfall examples, use twyne_data alias
     twyne_data = all_data
 
-    # Create continuous chart with dual y-axis
-    fig_eff = go.Figure()
-
-    # Extract data for plotting
     leverages = list(leverage_range)
-    all_yields = [all_data[L]['yield'] for L in leverages]
-    credit_costs = [all_data[L]['credit_cost'] for L in leverages]
-
-    # Split into Aave range (1 to 14) and Twyne range (14+)
     aave_leverages = [L for L in leverages if L <= aave_max_int]
     twyne_leverages = [L for L in leverages if L >= aave_max_int]
-    aave_yields = [all_data[L]['yield'] for L in aave_leverages]
-    twyne_yields = [all_data[L]['yield'] for L in twyne_leverages]
-    twyne_credit_costs = [all_data[L]['credit_cost'] for L in twyne_leverages]
-    # Gross yield = net yield + credit cost (what you'd earn without Twyne fees)
-    twyne_gross_yields = [all_data[L]['yield'] + all_data[L]['credit_cost'] for L in twyne_leverages]
+    aave_yields = [calc_yield_for_leverage_hf(L, r_stake, r_borrow, 1.0) for L in aave_leverages]
+    aave_max_yield_val = aave_yields[-1]  # Yield at Aave max leverage
 
-    # Aave yield line (1x to 14x) - no credit cost
+    # =========================================================================
+    # Yield vs Leverage + Waterfall Chart (side by side)
+    # =========================================================================
+    # Max HF where Twyne leverage > Aave leverage: HF < liq_ltv_max / liq_ltv_c
+    max_hf_for_twyne = liq_ltv_max / liq_ltv_c  # e.g., 97%/93% ≈ 1.043
+
+    # HF slider above both charts - controls the Twyne yield curve slope
+    slider_hf = st.slider(
+        "Health Factor",
+        min_value=1.0,
+        max_value=round(max_hf_for_twyne, 2),
+        value=1.0,
+        step=0.01,
+        format="%.2f",
+        key="yield_hf_slider",
+        help=f"Max HF for Twyne leverage > Aave: {max_hf_for_twyne:.2f}"
+    )
+
+    # Calculate max leverage at selected HF
+    slider_lt = liq_ltv_max / slider_hf
+    if slider_lt >= 1:
+        slider_max_L = twyne_max_int
+    else:
+        slider_max_L = min(int(1 / (1 - slider_lt)), twyne_max_int)
+    slider_leverages = [L for L in twyne_leverages if L <= slider_max_L]
+    slider_yields = [calc_yield_for_leverage_hf(L, r_stake, r_borrow, slider_hf) for L in slider_leverages]
+    slider_gross = [(L * r_stake - (L - 1) * r_borrow) * 100 for L in slider_leverages]
+
+    # Create yield vs leverage chart
+    fig_eff = go.Figure()
+
+    # Aave yield line (1x to Aave max)
     fig_eff.add_trace(go.Scatter(
         x=aave_leverages,
         y=aave_yields,
         mode='lines',
-        name=f'Aave Yield (1-{aave_max_int}x)',
+        name='Aave Yield',
         line=dict(color='#ef6c00', width=3),
-        fill='tozeroy',
-        fillcolor='rgba(239, 108, 0, 0.15)',
         hovertemplate='Aave %{x}x: %{y:.1f}%<extra></extra>',
+        legendrank=1,
     ))
 
-    # Twyne gross yield (dotted line) - yield before credit cost
+    # Gross yield line (no credit cost) - dotted
     fig_eff.add_trace(go.Scatter(
-        x=twyne_leverages,
-        y=twyne_gross_yields,
+        x=slider_leverages,
+        y=slider_gross,
         mode='lines',
-        name='Gross Yield (before credit cost)',
-        line=dict(color='#7b1fa2', width=2, dash='dot'),
+        name='Gross (no credit cost)',
+        line=dict(color='#9e9e9e', width=2, dash='dot'),
         hovertemplate='Gross %{x}x: %{y:.1f}%<extra></extra>',
+        legendrank=4,
     ))
 
-    # Twyne net yield line (14x to 33x) - fill between gross and net to show credit cost
+    # Red fill: Gross yield (top) to Twyne yield (bottom) = credit cost
     fig_eff.add_trace(go.Scatter(
-        x=twyne_leverages,
-        y=twyne_yields,
-        mode='lines',
-        name=f'Twyne Net Yield ({aave_max_int}-{twyne_max_int}x)',
-        line=dict(color='#7b1fa2', width=3),
-        fill='tonexty',
-        fillcolor='rgba(183, 28, 28, 0.3)',  # Red fill for credit cost
-        hovertemplate='Twyne %{x}x: %{y:.1f}%<extra></extra>',
-        legendgroup='twyne_net',
-        showlegend=False,
-    ))
-
-    # Separate legend entry for Twyne Net Yield (without fill)
-    fig_eff.add_trace(go.Scatter(
-        x=[None],
-        y=[None],
-        mode='lines',
-        name=f'Twyne Net Yield ({aave_max_int}-{twyne_max_int}x)',
-        line=dict(color='#7b1fa2', width=3),
-    ))
-
-    # Separate legend entry for Credit Cost (red area)
-    fig_eff.add_trace(go.Scatter(
-        x=[None],
-        y=[None],
-        mode='markers',
-        name='Credit Cost',
-        marker=dict(size=15, color='rgba(183, 28, 28, 0.5)', symbol='square'),
-    ))
-
-    # Fill under Twyne net yield
-    fig_eff.add_trace(go.Scatter(
-        x=twyne_leverages,
-        y=twyne_yields,
+        x=slider_leverages,
+        y=slider_gross,
         mode='lines',
         line=dict(color='rgba(0,0,0,0)', width=0),
-        fill='tozeroy',
-        fillcolor='rgba(123, 31, 162, 0.15)',
+        showlegend=False,
+        hoverinfo='skip',
+    ))
+    fig_eff.add_trace(go.Scatter(
+        x=slider_leverages,
+        y=slider_yields,
+        mode='lines',
+        line=dict(color='rgba(0,0,0,0)', width=0),
+        fill='tonexty',
+        fillcolor='rgba(139, 0, 0, 0.35)',
         showlegend=False,
         hoverinfo='skip',
     ))
 
-    # Add vertical line at Aave max
+    # Fill: Aave max yield (bottom) to Twyne yield (top)
+    # Green for yield boost (positive spread), red for yield loss (negative spread)
+    twyne_extra_color = 'rgba(76, 175, 80, 0.25)' if (r_stake - r_borrow) >= 0 else 'rgba(198, 40, 40, 0.25)'
+    fig_eff.add_trace(go.Scatter(
+        x=slider_leverages,
+        y=[aave_max_yield_val] * len(slider_leverages),
+        mode='lines',
+        line=dict(color='rgba(0,0,0,0)', width=0),
+        showlegend=False,
+        hoverinfo='skip',
+    ))
+    fig_eff.add_trace(go.Scatter(
+        x=slider_leverages,
+        y=slider_yields,
+        mode='lines',
+        line=dict(color='rgba(0,0,0,0)', width=0),
+        fill='tonexty',
+        fillcolor=twyne_extra_color,
+        showlegend=False,
+        hoverinfo='skip',
+    ))
+    # Twyne yield line (legend entry without fill)
+    fig_eff.add_trace(go.Scatter(
+        x=slider_leverages,
+        y=slider_yields,
+        mode='lines',
+        name='Twyne Yield',
+        line=dict(color='#9c27b0', width=3),
+        hovertemplate=f'Twyne<br>%{{x}}x: %{{y:.1f}}%<extra></extra>',
+        legendrank=2,
+    ))
+
+    # Flat dotted line for Aave max yield
+    fig_eff.add_trace(go.Scatter(
+        x=[aave_max_int, slider_max_L],
+        y=[aave_max_yield_val, aave_max_yield_val],
+        mode='lines',
+        name='Aave max yield',
+        line=dict(color='#ef6c00', width=2, dash='dot'),
+        hovertemplate=f'Aave max yield: {aave_max_yield_val:.1f}%<extra></extra>',
+        legendrank=3,
+    ))
+
+    # Legend entries for shaded areas
+    fig_eff.add_trace(go.Scatter(
+        x=[None], y=[None], mode='markers', name='Credit cost',
+        marker=dict(symbol='square', size=15, color='rgba(139, 0, 0, 0.35)'),
+        legendrank=5,
+    ))
+    # Dynamic label and color: "yield boost" (green) when positive spread, "yield loss" (red) when negative
+    twyne_extra_label = 'Twyne yield boost' if (r_stake - r_borrow) >= 0 else 'Twyne yield loss'
+    fig_eff.add_trace(go.Scatter(
+        x=[None], y=[None], mode='markers', name=twyne_extra_label,
+        marker=dict(symbol='square', size=15, color=twyne_extra_color),
+        legendrank=6,
+    ))
+
+    # Vertical line at Aave max
     fig_eff.add_vline(
-        x=aave_max_int,
-        line_dash="dash",
-        line_color="gray",
-        line_width=1,
-        annotation_text=f"Aave max ({aave_max_int}x)",
-        annotation_position="top",
+        x=aave_max_int, line_dash="dash", line_color="gray", line_width=1,
+        annotation_text=f"Aave max ({aave_max_int}x)", annotation_position="top",
     )
 
     fig_eff.update_layout(
-        title='Yield vs Leverage: Full Range',
+        title=f'Yield vs Leverage (HF {slider_hf:.2f})',
         xaxis_title='Leverage (x)',
-        yaxis_title='Yield / Cost (%)',
+        yaxis_title='Net Yield (%)',
         height=380,
-        legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.02),
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.02, traceorder='grouped'),
         margin=dict(l=50, r=150, t=40, b=50),
         hovermode='x unified',
     )
 
-    st.plotly_chart(fig_eff, width='stretch')
+    yield_col, waterfall_col = st.columns([2, 1])
 
-    # =========================================================================
-    # Waterfall Chart + Efficiency Chart (side by side)
-    # =========================================================================
-    # Titles row
-    wf_title_col, eff_title_col = st.columns(2)
-    with wf_title_col:
-        st.markdown("**Yield Breakdown: Aave → Twyne**")
-        st.caption("How Twyne leverage builds on Aave yield. Green = extra yield, Red = credit cost.")
-    with eff_title_col:
-        st.markdown("**Credit Efficiency vs Leverage**")
-        st.caption("Extra yield per credit cost at each leverage. Higher = better value.")
+    with yield_col:
+        st.plotly_chart(fig_eff, use_container_width=True)
 
-    # Charts row
-    wf_col, eff_col = st.columns(2)
+    # Calculate yield components at slider HF for waterfall
+    wf_psi = psi(liq_ltv_max, params['beta_safe'], params['liq_ltv_clp'], params['liq_ltv_c'])
+    wf_gross = slider_max_L * r_stake - (slider_max_L - 1) * r_borrow
+    wf_credit_cost = slider_max_L * wf_psi * ir_u
+    wf_net_yield = (wf_gross - wf_credit_cost) * 100
+    wf_credit_cost_pct = wf_credit_cost * 100
+    wf_extra_leverage = slider_max_L - aave_max_int
+    wf_gross_extra = wf_extra_leverage * (r_stake - r_borrow) * 100
 
-    # Use Twyne max for main waterfall
-    twyne_L = twyne_max_int
-    d = all_data[twyne_L]
+    # Create waterfall chart using Bar with manual positioning for custom colors
+    # Dynamic labels based on whether extra leverage helps or hurts
+    extra_label = 'Extra Yield' if wf_gross_extra >= 0 else 'Extra Loss'
+    extra_text = f'+{wf_gross_extra:.1f}%' if wf_gross_extra >= 0 else f'{wf_gross_extra:.1f}%'
 
-    with wf_col:
-        # Create waterfall chart
-        fig_waterfall = go.Figure(go.Waterfall(
-            orientation='v',
-            x=[f'Aave {aave_L}x', 'Extra Yield', 'Credit Cost', f'Twyne {twyne_L}x'],
-            y=[aave_max_yield, d['gross_extra'], -d['credit_cost'], 0],
-            measure=['absolute', 'relative', 'relative', 'total'],
-            connector={'line': {'color': 'rgba(0,0,0,0.1)'}},
-            decreasing={'marker': {'color': '#c62828'}},  # Red for cost
-            increasing={'marker': {'color': '#4CAF50'}},  # Green for gains
-            totals={'marker': {'color': '#7b1fa2'}},      # Purple for total
-            text=[f'{aave_max_yield:.1f}%', f'+{d["gross_extra"]:.1f}%',
-                  f'-{d["credit_cost"]:.1f}%', f'{d["yield"]:.1f}%'],
+    # Determine colors: Aave=orange, Extra=red/green based on direction, Credit=dark red, Twyne=purple
+    extra_color = '#4CAF50' if wf_gross_extra >= 0 else '#c62828'
+
+    # Calculate waterfall positions manually
+    # Bar 1: Aave (starts at 0)
+    # Bar 2: Extra (starts at top of Aave)
+    # Bar 3: Credit Cost (starts at top of Extra, goes down)
+    # Bar 4: Twyne total (starts at 0)
+    x_labels = [f'Aave {aave_max_int}x', extra_label, 'Credit Cost', f'Twyne {slider_max_L}x']
+
+    # Calculate bases and heights for waterfall effect
+    aave_base = 0 if aave_max_yield >= 0 else aave_max_yield
+    aave_height = abs(aave_max_yield)
+
+    extra_base = aave_max_yield if wf_gross_extra >= 0 else aave_max_yield + wf_gross_extra
+    extra_height = abs(wf_gross_extra)
+
+    credit_top = aave_max_yield + wf_gross_extra
+    credit_base = credit_top - wf_credit_cost_pct if wf_credit_cost_pct >= 0 else credit_top
+    credit_height = abs(wf_credit_cost_pct)
+
+    twyne_base = 0 if wf_net_yield >= 0 else wf_net_yield
+    twyne_height = abs(wf_net_yield)
+
+    fig_waterfall = go.Figure()
+
+    # Add bars individually for custom colors
+    bar_data = [
+        (x_labels[0], aave_base, aave_height, '#ef6c00', f'{aave_max_yield:.1f}%'),
+        (x_labels[1], extra_base, extra_height, extra_color, extra_text),
+        (x_labels[2], credit_base, credit_height, '#8b0000', f'-{wf_credit_cost_pct:.1f}%'),
+        (x_labels[3], twyne_base, twyne_height, '#7b1fa2', f'{wf_net_yield:.1f}%'),
+    ]
+
+    for x, base, height, color, text in bar_data:
+        fig_waterfall.add_trace(go.Bar(
+            x=[x],
+            y=[height],
+            base=[base],
+            marker_color=color,
+            text=[text],
             textposition='outside',
             textfont=dict(size=14),
-        ))
-
-        max_y = aave_max_yield + d['gross_extra']
-        fig_waterfall.update_layout(
-            height=350,
-            yaxis_title='Annualized Yield (%)',
             showlegend=False,
-            yaxis=dict(range=[0, max_y * 1.2]),
-            margin=dict(l=50, r=30, t=20, b=50),
-        )
-
-        st.plotly_chart(fig_waterfall, use_container_width=True)
-
-    with eff_col:
-        # Calculate efficiency for all Twyne leverage levels
-        twyne_only_leverages = [L for L in leverage_range if L > aave_max_int]
-        efficiencies = [all_data[L]['efficiency'] for L in twyne_only_leverages]
-
-        fig_eff_curve = go.Figure()
-
-        # Efficiency line
-        fig_eff_curve.add_trace(go.Scatter(
-            x=twyne_only_leverages,
-            y=efficiencies,
-            mode='lines+markers',
-            name='Efficiency',
-            line=dict(color='#7b1fa2', width=3),
-            marker=dict(size=8),
-            fill='tozeroy',
-            fillcolor='rgba(123, 31, 162, 0.15)',
-            hovertemplate='%{x}x: %{y:.1f}x efficiency<extra></extra>',
         ))
 
-        # Add reference line at 1x efficiency (break-even)
-        fig_eff_curve.add_hline(
-            y=1,
-            line_dash="dot",
-            line_color="gray",
-            line_width=1,
-            annotation_text="1x",
-            annotation_position="right",
-        )
+    # Dynamic y-axis range to handle negative values
+    all_values = [aave_max_yield, aave_max_yield + wf_gross_extra,
+                  aave_max_yield + wf_gross_extra - wf_credit_cost_pct, wf_net_yield]
+    y_min = min(0, min(all_values) * 1.2)
+    y_max = max(0, max(all_values) * 1.2)
+    # Ensure some range if all values are near zero
+    if y_max - y_min < 1:
+        y_min, y_max = -1, 1
 
-        fig_eff_curve.update_layout(
-            height=350,
-            xaxis_title="Leverage (x)",
-            yaxis_title="Efficiency",
-            margin=dict(l=50, r=30, t=20, b=50),
-        )
+    fig_waterfall.update_layout(
+        title=f'Yield Breakdown (HF {slider_hf:.2f})',
+        height=380,
+        yaxis_title='Annualized Yield (%)',
+        showlegend=False,
+        yaxis=dict(range=[y_min, y_max]),
+        xaxis=dict(categoryorder='array', categoryarray=x_labels),
+        margin=dict(l=50, r=30, t=40, b=50),
+        bargap=0.3,
+    )
 
-        st.plotly_chart(fig_eff_curve, use_container_width=True)
+    with waterfall_col:
+        st.plotly_chart(fig_waterfall, use_container_width=True)
 
     # -------------------------------------------------------------------------
     # Spread Sensitivity & Buffer Charts
@@ -876,12 +930,12 @@ with tab2:
 
     for L in leverage_to_plot:
         yields_at_spread = []
-        lt = ltv_from_leverage(L)
-        llt = lt * ref_hf
         is_twyne = L > L_aave
 
         if is_twyne:
-            p = psi(llt, params['beta_safe'], params['liq_ltv_clp'], params['liq_ltv_c'])
+            lt = (L - 1) / L
+            llt_needed = min(lt * ref_hf, liq_ltv_max)
+            p = max(0, psi(llt_needed, params['beta_safe'], params['liq_ltv_clp'], params['liq_ltv_c']))
             credit_cost = L * p * ir_u
         else:
             credit_cost = 0
@@ -937,388 +991,10 @@ with tab2:
         margin=dict(r=150),
     )
 
-    # Calculate buffers for each leverage level (needed for buffer chart)
-    # Show only one Aave level, labeled as "Aave"
-    buffer_levels = [aave_max_int, 20, twyne_max_int]
-    buffer_labels = ["Aave", "Twyne 20x", f"Twyne {twyne_max_int}x"]
-    buffer_breakevens = []
-    buffer_values = []
-    buffer_colors = ["#ef6c00", "#1e88e5", "#7b1fa2"]
-
-    for L in buffer_levels:
-        # Calculate break-even spread
-        if L > L_aave:
-            lt = ltv_from_leverage(L)
-            llt = lt * ref_hf
-            p = psi(llt, params['beta_safe'], params['liq_ltv_clp'], params['liq_ltv_c'])
-            credit_cost_buf = L * p * ir_u
-            s_be = credit_cost_buf / (L - 1)
-        else:
-            s_be = 0  # Aave breaks even at spread = 0
-
-        buffer = current_spread - s_be
-        buffer_breakevens.append(s_be * 100)
-        buffer_values.append(buffer * 100)
-
-    fig_buffer = go.Figure()
-
-    # Bars showing buffer (from breakeven to current spread)
-    fig_buffer.add_trace(go.Bar(
-        x=buffer_labels,
-        y=buffer_values,
-        marker_color=buffer_colors,
-        text=[f"{v:.2f}%" for v in buffer_values],
-        textposition="outside",
-        hovertemplate='%{x}: Buffer = %{y:.2f}%<extra></extra>',
-    ))
-
-    # Add current spread reference line
-    fig_buffer.add_hline(
-        y=current_spread * 100,
-        line_dash="dash",
-        line_color="green",
-        line_width=2,
-        annotation_text=f"Current ({current_spread*100:.2f}%)",
-        annotation_position="top right",
-        annotation_font_color="green",
-    )
-
-    fig_buffer.update_layout(
-        height=400,
-        yaxis_title="Buffer (%)",
-        yaxis=dict(range=[0, max(buffer_values) * 1.3]),
-        margin=dict(l=50, r=30, t=20, b=30),
-    )
-
-    # Side by side layout with titles above each
-    col_title1, col_title2 = st.columns([2, 1])
-    with col_title1:
-        st.markdown("**Spread Sensitivity**")
-        st.caption("How yield changes with spread.")
-    with col_title2:
-        st.markdown("**Spread Buffer**")
-        st.caption("How much spread can drop before worse than holding stETH.")
-
-    col_sens, col_buf = st.columns([2, 1])
-    with col_sens:
-        st.plotly_chart(fig_sensitivity, width='stretch')
-    with col_buf:
-        st.plotly_chart(fig_buffer, width='stretch')
-
-    # =========================================================================
-    # Rate Shock Analysis
-    # =========================================================================
-    st.markdown("**Rate Shock Analysis**")
-
-    # Stress test scenarios
-    scenarios = [
-        {"name": "Current", "label": "Current", "borrow_mult": 1.0, "stake_mult": 1.0},
-        {"name": "Mild", "label": "Mild\n(+50%)", "borrow_mult": 1.5, "stake_mult": 1.0},
-        {"name": "Moderate", "label": "Moderate\n(+100%)", "borrow_mult": 2.0, "stake_mult": 1.0},
-        {"name": "Severe", "label": "Severe\n(+200%)", "borrow_mult": 3.0, "stake_mult": 0.8},
-    ]
-
-    # Leverage levels (simplified - no HF variants)
-    leverage_levels = [2, aave_max_int, 20, twyne_max_int]
-    ref_hf_shock = 1.05  # Reference HF for calculations
-
-    # Colors for each leverage level
-    leverage_colors = {
-        2: '#4caf50',  # Green
-        aave_max_int: '#ff9800',  # Orange
-        20: '#2196f3',  # Blue
-        twyne_max_int: '#9c27b0',  # Purple
-    }
-
-    # Calculate data for each leverage level
-    leverage_data = {}
-    for L in leverage_levels:
-        lt = ltv_from_leverage(L)
-        llt = lt * ref_hf_shock
-        psi_val = psi(llt, params['beta_safe'], params['liq_ltv_clp'], params['liq_ltv_c'])
-
-        # Rate buffer
-        break_even = (L * r_stake - L * psi_val * ir_u) / (L - 1)
-        buffer_pct = (break_even / r_borrow - 1) * 100 if r_borrow > 0 else float('inf')
-
-        label = f"{'Aave' if L <= aave_max_int else 'Twyne'} {L}x"
-        yields = []
-        dtl_values = []  # Days to liquidation
-        for s in scenarios:
-            shocked_borrow = r_borrow * s["borrow_mult"]
-            shocked_stake = r_stake * s["stake_mult"]
-            shocked_yield = (L * shocked_stake - (L - 1) * shocked_borrow - L * psi_val * ir_u) * 100
-            yields.append(shocked_yield)
-
-            # Calculate days to liquidation
-            r_net_shocked = shocked_stake - shocked_borrow - psi_val * ir_u
-            if r_net_shocked >= 0:
-                dtl_values.append(None)  # Safe
-            else:
-                decay_factor = 1.0 + r_net_shocked / (1.0 + shocked_borrow)
-                if decay_factor > 0 and decay_factor < 1:
-                    dtl_days = -365 * np.log(ref_hf_shock) / np.log(decay_factor)
-                    dtl_values.append(dtl_days)
-                else:
-                    dtl_values.append(None)
-
-        leverage_data[L] = {
-            'label': label,
-            'buffer': buffer_pct,
-            'yields': yields,
-            'dtl': dtl_values,
-            'color': leverage_colors.get(L, '#666'),
-        }
-
-    # Rate Buffer header and plot
-    st.markdown("**Rate Buffer** — Max borrow rate increase before losing money")
-    st.caption("Higher buffer = more resilient to rate spikes. Buffer drops rapidly as leverage increases.")
-
-    # Calculate rate buffer for all leverage levels
-    all_lev_for_buffer = list(range(2, twyne_max_int + 1))
-    all_buffers = []
-    for L in all_lev_for_buffer:
-        lt = ltv_from_leverage(L)
-        llt = lt * ref_hf_shock
-        p = psi(llt, params['beta_safe'], params['liq_ltv_clp'], params['liq_ltv_c'])
-        break_even = (L * r_stake - L * p * ir_u) / (L - 1)
-        buffer_pct = (break_even / r_borrow - 1) * 100 if r_borrow > 0 else 1000
-        # Cap at 500% for visualization
-        all_buffers.append(min(buffer_pct, 500))
-
-    fig_buffer = go.Figure()
-
-    # Split into Aave and Twyne regions
-    aave_lev_buf = [L for L in all_lev_for_buffer if L <= aave_max_int]
-    aave_buffers = [all_buffers[i] for i, L in enumerate(all_lev_for_buffer) if L <= aave_max_int]
-    twyne_lev_buf = [L for L in all_lev_for_buffer if L > aave_max_int]
-    twyne_buffers = [all_buffers[i] for i, L in enumerate(all_lev_for_buffer) if L > aave_max_int]
-
-    # Aave region
-    if aave_lev_buf:
-        fig_buffer.add_trace(go.Scatter(
-            x=aave_lev_buf,
-            y=aave_buffers,
-            mode='lines',
-            line=dict(color='#6c757d', width=2.5),
-            name='Aave',
-            hovertemplate='Aave %{x}x<br>Buffer: +%{y:.0f}%<extra></extra>',
-        ))
-
-    # Twyne region
-    if twyne_lev_buf:
-        twyne_x = [aave_max_int] + twyne_lev_buf if aave_lev_buf else twyne_lev_buf
-        twyne_y = [aave_buffers[-1]] + twyne_buffers if aave_buffers else twyne_buffers
-        fig_buffer.add_trace(go.Scatter(
-            x=twyne_x,
-            y=twyne_y,
-            mode='lines',
-            line=dict(color='#5E60CE', width=2.5),
-            name='Twyne',
-            hovertemplate='Twyne %{x}x<br>Buffer: +%{y:.0f}%<extra></extra>',
-        ))
-
-    # Add markers for selected leverage levels
-    for L in leverage_levels:
-        if L in all_lev_for_buffer:
-            idx = all_lev_for_buffer.index(L)
-            buf_val = all_buffers[idx]
-            name, color, _ = get_leverage_style(L)
-            fig_buffer.add_trace(go.Scatter(
-                x=[L],
-                y=[buf_val],
-                mode='markers+text',
-                marker=dict(size=12, color=color, line=dict(width=2, color='white')),
-                text=[f'{name}<br>+{buf_val:.0f}%'],
-                textposition='top center',
-                textfont=dict(size=10),
-                name=name,
-                showlegend=False,
-                hovertemplate=f'{name}<br>Buffer: +{buf_val:.0f}%<extra></extra>',
-            ))
-
-    # Add vertical line at Aave max
-    fig_buffer.add_vline(x=aave_max_int, line_dash="dot", line_color="#adb5bd", opacity=0.7)
-
-    max_buffer = max(all_buffers) if all_buffers else 100
-    fig_buffer.update_layout(
-        xaxis_title="Leverage",
-        yaxis_title="Rate Buffer (%)",
-        height=300,
-        yaxis=dict(range=[0, min(max_buffer * 1.3, 550)]),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-    st.plotly_chart(fig_buffer, width='stretch')
-
-    st.markdown("**Impact of Borrow Rate Spikes**")
-    st.caption("How yield and time-to-liquidation change as borrow rates increase. Steeper slope = higher sensitivity to rate shocks.")
-
-    # Side by side charts
-    yield_col, dtl_col = st.columns(2)
-
-    with yield_col:
-        st.markdown("**Net Yield**")
-        fig = go.Figure()
-
-        for L in leverage_levels:
-            data = leverage_data[L]
-            fig.add_trace(go.Scatter(
-                x=[s["label"] for s in scenarios],
-                y=data['yields'],
-                mode='lines+markers+text',
-                name=data['label'],
-                line=dict(color=data['color'], width=3),
-                marker=dict(size=8),
-                text=[f"{y:.0f}%" for y in data['yields']],
-                textposition='top center',
-                textfont=dict(size=9),
-                hovertemplate=f"<b>{data['label']}</b><br>%{{x}}<br>Net Yield: %{{y:.1f}}%<extra></extra>",
-            ))
-
-        # Zero line (break-even)
-        fig.add_hline(y=0, line_dash="dash", line_color="red", line_width=2)
-
-        # Calculate y-axis range
-        all_yields = [y for L in leverage_levels for y in leverage_data[L]['yields']]
-        min_y = min(all_yields)
-        max_y = max(all_yields)
-        padding = max(abs(min_y), abs(max_y)) * 0.25
-
-        fig.update_layout(
-            height=350,
-            yaxis=dict(
-                title="Net Yield (%)",
-                range=[min_y - padding, max_y + padding],
-                zeroline=False,
-            ),
-            xaxis=dict(title=""),
-            legend=dict(
-                yanchor='top',
-                y=0.99,
-                xanchor='left',
-                x=1.02,
-            ),
-            margin=dict(l=50, r=100, t=10, b=40),
-            hovermode='x unified',
-        )
-
-        st.plotly_chart(fig, use_container_width=True)
-
-    with dtl_col:
-        st.markdown("**Days to Liquidation**")
-        fig_dtl = go.Figure()
-
-        for L in leverage_levels:
-            data = leverage_data[L]
-            dtl_display = []
-            dtl_text = []
-            for dtl in data['dtl']:
-                if dtl is None:
-                    dtl_display.append(None)
-                    dtl_text.append("Safe")
-                else:
-                    dtl_display.append(dtl)
-                    dtl_text.append(f"{int(dtl)}d")
-
-            fig_dtl.add_trace(go.Scatter(
-                x=[s["label"] for s in scenarios],
-                y=dtl_display,
-                mode='lines+markers+text',
-                name=data['label'],
-                line=dict(color=data['color'], width=3),
-                marker=dict(size=8),
-                text=dtl_text,
-                textposition='top center',
-                textfont=dict(size=9),
-                hovertemplate=f"<b>{data['label']}</b><br>%{{x}}<br>Days to Liq: %{{text}}<extra></extra>",
-                connectgaps=False,
-            ))
-
-        # Calculate y-axis range for DTL
-        all_dtl = [d for L in leverage_levels for d in leverage_data[L]['dtl'] if d is not None]
-        if all_dtl:
-            max_dtl = max(all_dtl)
-            fig_dtl.update_layout(
-                yaxis=dict(range=[0, max_dtl * 1.3]),
-            )
-
-        fig_dtl.update_layout(
-            height=350,
-            yaxis=dict(title="Days"),
-            xaxis=dict(title=""),
-            legend=dict(
-                yanchor='top',
-                y=0.99,
-                xanchor='left',
-                x=1.02,
-            ),
-            margin=dict(l=50, r=100, t=10, b=40),
-            hovermode='x unified',
-            showlegend=False,  # Hide legend on second chart (redundant)
-        )
-
-        st.plotly_chart(fig_dtl, use_container_width=True)
-
-    st.caption("**Reading these charts:** Steeper yield decline = more sensitive to rate shocks. "
-               "Days to Liquidation shows how long you have to react. 'Safe' = positive yield, no liquidation risk.")
-
-    # =========================================================================
-    # Break-even Spread vs Holding stETH
-    # =========================================================================
-    st.markdown("---")
-    st.markdown("**Break-even Spread vs Holding stETH**")
-    st.caption("Minimum spread needed for leverage to **beat just holding stETH**. For Aave (no fees), any positive spread makes leverage better. For Twyne, you need enough spread to cover credit costs.")
-
-    # Calculate break-even spreads for all leverage levels
-    be_analysis_hf = 1.05
-    be_all_levs = list(range(2, int(L_max_global) + 1))
-    be_break_even_vs_hold = []
-
-    for L in be_all_levs:
-        lt = ltv_from_leverage(L)
-        llt = lt * be_analysis_hf
-        is_twyne = L > L_aave
-        if is_twyne:
-            p = psi(llt, params['beta_safe'], params['liq_ltv_clp'], params['liq_ltv_c'])
-            credit_cost = L * p * ir_u
-        else:
-            credit_cost = 0
-        be_hold = credit_cost / (L - 1) if L > 1 else 0
-        be_break_even_vs_hold.append(be_hold * 100)
-
-    fig_be = go.Figure()
-
-    # Split Aave/Twyne
-    be_aave_levs = [L for L in be_all_levs if L <= int(L_aave)]
-    be_aave_vals = [be_break_even_vs_hold[i] for i, L in enumerate(be_all_levs) if L <= int(L_aave)]
-    be_twyne_levs = [L for L in be_all_levs if L > int(L_aave)]
-    be_twyne_vals = [be_break_even_vs_hold[i] for i, L in enumerate(be_all_levs) if L > int(L_aave)]
-
-    if be_aave_levs:
-        fig_be.add_trace(go.Scatter(
-            x=be_aave_levs, y=be_aave_vals, mode='lines', name='Aave',
-            line=dict(color='#6c757d', width=2.5),
-            hovertemplate='Aave %{x}x<br>Beat Hold at: %{y:.3f}% spread<extra></extra>',
-        ))
-
-    if be_twyne_levs:
-        be_twyne_x = [int(L_aave)] + be_twyne_levs if be_aave_levs else be_twyne_levs
-        be_twyne_y = [be_aave_vals[-1]] + be_twyne_vals if be_aave_vals else be_twyne_vals
-        fig_be.add_trace(go.Scatter(
-            x=be_twyne_x, y=be_twyne_y, mode='lines', name='Twyne',
-            line=dict(color='#5E60CE', width=2.5),
-            hovertemplate='Twyne %{x}x<br>Beat Hold at: %{y:.3f}% spread<extra></extra>',
-        ))
-
-    fig_be.add_hline(y=0, line_dash="dot", line_color="#adb5bd", line_width=1, opacity=0.5)
-
-    fig_be.update_layout(
-        xaxis_title="Leverage",
-        yaxis_title="Break-even Spread %",
-        height=300,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-    st.plotly_chart(fig_be, width='stretch')
+    # Spread Sensitivity chart only
+    st.markdown("**Spread Sensitivity**")
+    st.caption("How yield changes with spread.")
+    st.plotly_chart(fig_sensitivity, use_container_width=True)
 
 # =============================================================================
 # Tab 1: Backtest & History
@@ -1329,6 +1005,7 @@ with tab1:
     # Backtest Section
     # =========================================================================
     st.header("Historical Backtest")
+    st.caption("ℹ️ Uses: LTVs, IR Model (historical rates from data)")
 
     # Backtest parameters in expander
     with st.expander("Backtest Settings", expanded=False):
@@ -1459,7 +1136,6 @@ with tab1:
                 "Ann. Return": r.metrics['annualized_return'] * 100,
                 "Max Drawdown": r.metrics['max_drawdown'] * 100,
                 "Volatility": volatility,
-                "Sharpe": r.metrics['sharpe_ratio'] if not np.isnan(r.metrics['sharpe_ratio']) else 0,
             })
 
         summary_df = pd.DataFrame(summary_data)
@@ -1476,29 +1152,22 @@ with tab1:
                 "Ann. Return",
                 format="%.1f%%",
                 min_value=min(0, summary_df["Ann. Return"].min()),
-                max_value=summary_df["Ann. Return"].max(),
+                max_value=max(0.1, summary_df["Ann. Return"].max()),  # Ensure non-zero max
                 help="Annualized return. What the total return would be if extrapolated to a full year.",
             ),
             "Max Drawdown": st.column_config.ProgressColumn(
                 "Max Drawdown",
                 format="%.1f%%",
                 min_value=0,
-                max_value=summary_df["Max Drawdown"].max(),
+                max_value=max(0.1, summary_df["Max Drawdown"].max()),  # Ensure non-zero max
                 help="Maximum drawdown. Largest peak-to-trough decline. Lower is better.",
             ),
             "Volatility": st.column_config.ProgressColumn(
                 "Volatility",
                 format="%.1f%%",
                 min_value=0,
-                max_value=summary_df["Volatility"].max(),
+                max_value=max(0.1, summary_df["Volatility"].max()),  # Ensure non-zero max
                 help="Annualized volatility. Standard deviation of daily returns. Lower = smoother ride.",
-            ),
-            "Sharpe": st.column_config.ProgressColumn(
-                "Sharpe",
-                format="%.2f",
-                min_value=min(0, summary_df["Sharpe"].min()),
-                max_value=summary_df["Sharpe"].max(),
-                help="Sharpe ratio (return ÷ volatility). Higher is better. Above 1.0 is generally good.",
             ),
         }
 
@@ -1541,16 +1210,31 @@ with tab1:
         # -----------------------------------------------------------------
         st.markdown("**Rolling Annualized Yield**")
 
-        # Window period selector
+        # Window period selector - default based on data length
         rolling_window_options = {"Daily": 1, "7 Days": 7, "30 Days": 30}
         rolling_window_labels = list(rolling_window_options.keys())
+        # Auto-select appropriate default based on data length
+        if len(df_filtered) <= 14:
+            default_window = "Daily"
+        elif len(df_filtered) <= 45:
+            default_window = "7 Days"
+        else:
+            default_window = "30 Days"
+
+        # Force update if data length changed significantly
+        bt_data_bucket = "short" if len(df_filtered) <= 14 else ("medium" if len(df_filtered) <= 45 else "long")
+        if "bt_rolling_data_bucket" not in st.session_state or st.session_state.bt_rolling_data_bucket != bt_data_bucket:
+            st.session_state.bt_rolling_data_bucket = bt_data_bucket
+            st.session_state.bt_rolling_window = default_window
+
         rolling_window_col, _ = st.columns([1, 3])
         with rolling_window_col:
             selected_window_label = st.segmented_control(
                 "Window",
                 rolling_window_labels,
-                default="30 Days",
+                default=st.session_state.get("bt_rolling_window", default_window),
                 label_visibility="collapsed",
+                key="bt_rolling_window"
             )
         rolling_window = rolling_window_options[selected_window_label]
 
@@ -1589,32 +1273,39 @@ with tab1:
         # -----------------------------------------------------------------
         st.markdown("**Drawdown**")
         st.caption("Percentage below all-time high at each point. Deepest dips = max drawdown (worst peak-to-trough loss). Higher leverage = deeper drawdowns.")
-        fig_dd = go.Figure()
 
-        for L in sorted(results.keys()):
-            r = results[L]
-            name, color, width = get_leverage_style(L)
-            capital_series = pd.Series(r.capital, index=r.dates)
-            rolling_max = capital_series.expanding().max()
-            drawdown = (capital_series - rolling_max) / rolling_max * 100
+        # Check if all drawdowns are essentially zero
+        max_dd_all = max(r.metrics['max_drawdown'] for r in results.values())
 
-            fig_dd.add_trace(go.Scatter(
-                x=r.dates, y=drawdown.values,
-                name=name,
-                mode='lines',
-                fill='tozeroy',
-                line=dict(color=color, width=width),
-                hovertemplate="%{y:.1f}%<extra></extra>",
-            ))
+        if max_dd_all < 0.0001:  # Essentially zero drawdown
+            st.info("😎 **Up only!** No drawdowns during this period - all strategies stayed at or above their starting value.")
+        else:
+            fig_dd = go.Figure()
 
-        fig_dd.update_layout(
-            xaxis_title="Date",
-            yaxis_title="Drawdown (%)",
-            height=300,
-            legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.02),
-            hovermode='x unified',
-        )
-        st.plotly_chart(fig_dd, width='stretch')
+            for L in sorted(results.keys()):
+                r = results[L]
+                name, color, width = get_leverage_style(L)
+                capital_series = pd.Series(r.capital, index=r.dates)
+                rolling_max = capital_series.expanding().max()
+                drawdown = (capital_series - rolling_max) / rolling_max * 100
+
+                fig_dd.add_trace(go.Scatter(
+                    x=r.dates, y=drawdown.values,
+                    name=name,
+                    mode='lines',
+                    fill='tozeroy',
+                    line=dict(color=color, width=width),
+                    hovertemplate="%{y:.1f}%<extra></extra>",
+                ))
+
+            fig_dd.update_layout(
+                xaxis_title="Date",
+                yaxis_title="Drawdown (%)",
+                height=300,
+                legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.02),
+                hovermode='x unified',
+            )
+            st.plotly_chart(fig_dd, width='stretch')
 
         # -----------------------------------------------------------------
         # 4. Timing Sensitivity (Convergence Cone)
@@ -1622,9 +1313,27 @@ with tab1:
         st.markdown("**Timing Sensitivity**")
         st.caption("Does it matter when you enter? Charts show return range and loss probability across all possible entry dates for each holding period.")
 
-        # More granular holding periods for hover, but only show key labels on axis
-        holding_periods = list(range(7, 366, 7))  # Every 7 days from 7 to 364
-        holding_periods_labels = [7, 30, 90, 180, 365]  # Only show these on axis
+        # Dynamic holding periods based on data length
+        max_data_days = len(df_filtered)
+        if max_data_days <= 2:
+            # Not enough data for timing sensitivity
+            st.info("Need at least 3 days of data for timing sensitivity analysis.")
+            holding_periods = []
+            holding_periods_labels = []
+        elif max_data_days <= 14:
+            # Short period: daily increments, start from 1 day
+            holding_periods = list(range(1, max_data_days))
+            holding_periods_labels = [d for d in [1, 2, 3, 5, 7, 10, 14] if d < max_data_days]
+        elif max_data_days <= 60:
+            # Medium period: mix of daily and weekly
+            holding_periods = list(range(1, 8)) + list(range(7, min(max_data_days, 61), 7))
+            holding_periods = sorted(set(holding_periods))
+            holding_periods_labels = [d for d in [1, 7, 14, 30, 60] if d < max_data_days]
+        else:
+            # Long period: weekly increments
+            holding_periods = list(range(1, 8)) + list(range(7, min(max_data_days, 366), 7))
+            holding_periods = sorted(set(holding_periods))
+            holding_periods_labels = [d for d in [1, 7, 30, 90, 180, 365] if d < max_data_days]
 
         # Calculate return distribution using existing backtest capital data (FAST)
         sensitivity_data = {}
@@ -1657,175 +1366,184 @@ with tab1:
                     sensitivity_data[L]['median'].append(np.nan)
                     sensitivity_data[L]['loss_pct'].append(np.nan)
 
-        # Find last holding period where any leverage has loss > 0 (for x-axis range)
-        last_nonzero_idx = 0
-        for L in bt_leverage_levels:
-            loss_data = sensitivity_data[L]['loss_pct']
-            for i, val in enumerate(loss_data):
-                if val is not None and not np.isnan(val) and val > 0:
-                    last_nonzero_idx = max(last_nonzero_idx, i)
+        # Only show charts if we have holding periods data
+        if holding_periods:
+            # Find last holding period where any leverage has loss > 0 (for x-axis range)
+            last_nonzero_idx = 0
+            for L in bt_leverage_levels:
+                loss_data = sensitivity_data[L]['loss_pct']
+                for i, val in enumerate(loss_data):
+                    if val is not None and not np.isnan(val) and val > 0:
+                        last_nonzero_idx = max(last_nonzero_idx, i)
 
-        # Add some padding (20% more) after last non-zero point
-        max_idx = min(len(holding_periods) - 1, int(last_nonzero_idx * 1.2) + 2)
-        x_max = holding_periods[max_idx]
-        filtered_labels = [d for d in holding_periods_labels if d <= x_max]
+            # Add some padding (20% more) after last non-zero point
+            max_idx = min(len(holding_periods) - 1, int(last_nonzero_idx * 1.2) + 2)
+            x_max = holding_periods[max_idx]
+            filtered_labels = [d for d in holding_periods_labels if d <= x_max]
 
-        # Create side-by-side timing sensitivity charts
-        ts_col1, ts_col2 = st.columns(2)
+            # Create side-by-side timing sensitivity charts
+            ts_col1, ts_col2 = st.columns(2)
 
-        with ts_col1:
-            st.markdown("**Return Range by Holding Period**")
-            st.caption("Each band = one strategy's best-to-worst range. Higher leverage = wider band. White gaps = strategies don't overlap there.")
-            # Convergence cone chart
-            fig_cone = go.Figure()
+            with ts_col1:
+                st.markdown("**Return Range by Holding Period**")
+                st.caption("Each band = one strategy's best-to-worst range. Higher leverage = wider band. White gaps = strategies don't overlap there.")
+                # Convergence cone chart
+                fig_cone = go.Figure()
 
-            for L in sorted(bt_leverage_levels):
-                name, color, _ = get_leverage_style(L)
-                data = sensitivity_data[L]
+                for L in sorted(bt_leverage_levels):
+                    name, color, _ = get_leverage_style(L)
+                    data = sensitivity_data[L]
 
-                # Shaded area between best and worst
-                # Convert hex color to rgba with transparency
-                if color.startswith('#'):
-                    r = int(color[1:3], 16)
-                    g = int(color[3:5], 16)
-                    b = int(color[5:7], 16)
-                    fill_color = f'rgba({r},{g},{b},0.2)'
-                else:
-                    fill_color = 'rgba(128,128,128,0.2)'
+                    # Shaded area between best and worst
+                    # Convert hex color to rgba with transparency
+                    if color.startswith('#'):
+                        r = int(color[1:3], 16)
+                        g = int(color[3:5], 16)
+                        b = int(color[5:7], 16)
+                        fill_color = f'rgba({r},{g},{b},0.2)'
+                    else:
+                        fill_color = 'rgba(128,128,128,0.2)'
 
-                fig_cone.add_trace(go.Scatter(
-                    x=holding_periods + holding_periods[::-1],
-                    y=data['best'] + data['worst'][::-1],
-                    fill='toself',
-                    fillcolor=fill_color,
-                    line=dict(color='rgba(0,0,0,0)'),
-                    name=f'{name} range',
-                    legendgroup=name,
-                    showlegend=False,
-                    hoverinfo='skip',
-                ))
+                    fig_cone.add_trace(go.Scatter(
+                        x=holding_periods + holding_periods[::-1],
+                        y=data['best'] + data['worst'][::-1],
+                        fill='toself',
+                        fillcolor=fill_color,
+                        line=dict(color='rgba(0,0,0,0)'),
+                        name=f'{name} range',
+                        legendgroup=name,
+                        showlegend=False,
+                        hoverinfo='skip',
+                    ))
 
-                # Median line
-                fig_cone.add_trace(go.Scatter(
-                    x=holding_periods,
-                    y=data['median'],
-                    mode='lines',
-                    line=dict(color=color, width=2),
-                    name=name,
-                    legendgroup=name,
-                    hovertemplate=f"{name}<br>Holding Period: %{{x}} days<br>Median: %{{y:.1f}}%<br>Best: %{{customdata[0]:.1f}}%<br>Worst: %{{customdata[1]:.1f}}%<extra></extra>",
-                    customdata=list(zip(data['best'], data['worst'])),
-                ))
+                    # Median line
+                    fig_cone.add_trace(go.Scatter(
+                        x=holding_periods,
+                        y=data['median'],
+                        mode='lines',
+                        line=dict(color=color, width=2),
+                        name=name,
+                        legendgroup=name,
+                        hovertemplate=f"{name}<br>Holding Period: %{{x}} days<br>Median: %{{y:.1f}}%<br>Best: %{{customdata[0]:.1f}}%<br>Worst: %{{customdata[1]:.1f}}%<extra></extra>",
+                        customdata=list(zip(data['best'], data['worst'])),
+                    ))
 
-            fig_cone.update_layout(
-                xaxis_title="Holding Period (days)",
-                yaxis_title="Annualized Return (%)",
-                height=350,
-                legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.02),
-                hovermode='x unified',
-                xaxis=dict(
-                    tickmode='array',
-                    tickvals=[7, 30, 90, 180, 365],
-                    ticktext=['7', '30', '90', '180', '365'],
-                ),
-            )
-            fig_cone.add_hline(y=0, line_dash="solid", line_color="black", line_width=0.5)
-            st.plotly_chart(fig_cone, use_container_width=True)
+                fig_cone.update_layout(
+                    xaxis_title="Holding Period (days)",
+                    yaxis_title="Annualized Return (%)",
+                    height=350,
+                    legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.02),
+                    hovermode='x unified',
+                    xaxis=dict(
+                        tickmode='array',
+                        tickvals=filtered_labels,
+                        ticktext=[str(d) for d in filtered_labels],
+                    ),
+                )
+                fig_cone.add_hline(y=0, line_dash="solid", line_color="black", line_width=0.5)
+                st.plotly_chart(fig_cone, use_container_width=True)
 
-        with ts_col2:
-            st.markdown("**Loss Probability by Holding Period**")
-            st.caption("% of entry dates that lost money. Drops over time = longer holds historically safer.")
-            # Loss probability chart
-            fig_loss = go.Figure()
+            with ts_col2:
+                st.markdown("**Loss Probability by Holding Period**")
+                st.caption("% of entry dates that lost money. Drops over time = longer holds historically safer.")
+                # Loss probability chart
+                fig_loss = go.Figure()
 
-            for L in sorted(bt_leverage_levels):
-                name, color, _ = get_leverage_style(L)
-                data = sensitivity_data[L]
+                for L in sorted(bt_leverage_levels):
+                    name, color, _ = get_leverage_style(L)
+                    data = sensitivity_data[L]
 
-                fig_loss.add_trace(go.Scatter(
-                    x=holding_periods,
-                    y=data['loss_pct'],
-                    mode='lines',
-                    line=dict(color=color, width=2),
-                    name=name,
-                    hovertemplate=f"{name}<br>Holding Period: %{{x}} days<br>Loss prob: %{{y:.1f}}%<extra></extra>",
-                ))
+                    fig_loss.add_trace(go.Scatter(
+                        x=holding_periods,
+                        y=data['loss_pct'],
+                        mode='lines',
+                        line=dict(color=color, width=2),
+                        name=name,
+                        hovertemplate=f"{name}<br>Holding Period: %{{x}} days<br>Loss prob: %{{y:.1f}}%<extra></extra>",
+                    ))
 
-            fig_loss.update_layout(
-                xaxis_title="Holding Period (days)",
-                yaxis_title="Loss Probability (%)",
-                height=350,
-                legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.02),
-                hovermode='x unified',
-                xaxis=dict(
-                    tickmode='array',
-                    tickvals=filtered_labels,
-                    ticktext=[str(d) for d in filtered_labels],
-                    range=[0, x_max],
-                ),
-            )
-            st.plotly_chart(fig_loss, use_container_width=True)
+                fig_loss.update_layout(
+                    xaxis_title="Holding Period (days)",
+                    yaxis_title="Loss Probability (%)",
+                    height=350,
+                    legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.02),
+                    hovermode='x unified',
+                    xaxis=dict(
+                        tickmode='array',
+                        tickvals=filtered_labels,
+                        ticktext=[str(d) for d in filtered_labels],
+                        range=[0, x_max],
+                    ),
+                )
+                st.plotly_chart(fig_loss, use_container_width=True)
 
         # -----------------------------------------------------------------
-        # 5. Risk-Adjusted Comparison (Bar Chart)
+        # 5. Return vs Risk (Continuous Graph)
         # -----------------------------------------------------------------
-        st.markdown("**Risk-Adjusted Performance**")
-        col1, col2 = st.columns(2)
+        st.markdown("**Return vs Risk**")
+        st.caption("Continuous curve showing return (y) vs max drawdown (x) for all leverage levels. Ideal = top-left (high return, low risk).")
 
-        with col1:
-            st.markdown("**Sharpe Ratio vs Leverage**")
-            st.caption("Return divided by volatility. Above 1.0 = good, above 2.0 = excellent. Shows how risk-adjusted returns change with leverage.")
-
-            # Run backtests for all leverage levels from 2 to max
+        # Check if all drawdowns are essentially zero (reuse from earlier check)
+        if max_dd_all < 0.0001:  # Essentially zero drawdown
+            st.info("📈 **Up only!** No risk to plot - all strategies had zero drawdown during this period. Risk/return tradeoff chart not meaningful here.")
+        else:
+            # Compute returns and drawdowns for all leverage levels
             max_lev = int(L_max_global)
             all_leverages = list(range(2, max_lev + 1))
 
-            # Compute Sharpe for all leverage levels
-            all_sharpes = []
+            all_returns = []
+            all_drawdowns = []
             for L in all_leverages:
                 if L in results:
-                    # Use already computed result
-                    sharpe = results[L].metrics['sharpe_ratio'] if not np.isnan(results[L].metrics['sharpe_ratio']) else 0
+                    ret = results[L].metrics['annualized_return'] * 100
+                    dd = abs(results[L].metrics['max_drawdown']) * 100
                 else:
-                    # Compute new
                     try:
                         result = run_backtest(df_filtered, L, initial_hf=bt_initial_hf, utilization=utilization, **params)
-                        sharpe = result.metrics['sharpe_ratio'] if not np.isnan(result.metrics['sharpe_ratio']) else 0
+                        ret = result.metrics['annualized_return'] * 100
+                        dd = abs(result.metrics['max_drawdown']) * 100
                     except:
-                        sharpe = 0
-                all_sharpes.append(sharpe)
+                        ret = 0
+                        dd = 0
+                all_returns.append(ret)
+                all_drawdowns.append(dd)
 
-            fig_sharpe = go.Figure()
+            fig_risk = go.Figure()
 
-            # Split into Aave (≤L_aave) and Twyne (>L_aave) regions
+            # Split into Aave and Twyne regions
             aave_levs = [L for L in all_leverages if L <= int(L_aave)]
-            aave_sharpes = [all_sharpes[i] for i, L in enumerate(all_leverages) if L <= int(L_aave)]
+            aave_returns = [all_returns[i] for i, L in enumerate(all_leverages) if L <= int(L_aave)]
+            aave_drawdowns = [all_drawdowns[i] for i, L in enumerate(all_leverages) if L <= int(L_aave)]
+
             twyne_levs = [L for L in all_leverages if L > int(L_aave)]
-            twyne_sharpes = [all_sharpes[i] for i, L in enumerate(all_leverages) if L > int(L_aave)]
+            twyne_returns = [all_returns[i] for i, L in enumerate(all_leverages) if L > int(L_aave)]
+            twyne_drawdowns = [all_drawdowns[i] for i, L in enumerate(all_leverages) if L > int(L_aave)]
 
             # Aave region line
             if aave_levs:
-                fig_sharpe.add_trace(go.Scatter(
-                    x=aave_levs,
-                    y=aave_sharpes,
+                fig_risk.add_trace(go.Scatter(
+                    x=aave_drawdowns,
+                    y=aave_returns,
                     mode='lines',
-                    line=dict(color='#6c757d', width=2.5),
+                    line=dict(color='#ef6c00', width=3),
                     name='Aave',
-                    hovertemplate='Aave %{x}x<br>Sharpe: %{y:.2f}<extra></extra>',
+                    customdata=aave_levs,
+                    hovertemplate='Aave %{customdata}x<br>Return: %{y:.1f}%<br>Drawdown: %{x:.1f}%<extra></extra>',
                 ))
 
-            # Twyne region line
+            # Twyne region line (connect from last Aave point)
             if twyne_levs:
-                # Connect from last Aave point
-                twyne_x = [int(L_aave)] + twyne_levs if aave_levs else twyne_levs
-                twyne_y = [aave_sharpes[-1]] + twyne_sharpes if aave_sharpes else twyne_sharpes
-                fig_sharpe.add_trace(go.Scatter(
+                twyne_x = [aave_drawdowns[-1]] + twyne_drawdowns if aave_drawdowns else twyne_drawdowns
+                twyne_y = [aave_returns[-1]] + twyne_returns if aave_returns else twyne_returns
+                twyne_custom = [int(L_aave)] + twyne_levs if aave_levs else twyne_levs
+                fig_risk.add_trace(go.Scatter(
                     x=twyne_x,
                     y=twyne_y,
                     mode='lines',
-                    line=dict(color='#5E60CE', width=2.5),
+                    line=dict(color='#7b1fa2', width=3),
                     name='Twyne',
-                    hovertemplate='Twyne %{x}x<br>Sharpe: %{y:.2f}<extra></extra>',
+                    customdata=twyne_custom,
+                    hovertemplate='Twyne %{customdata}x<br>Return: %{y:.1f}%<br>Drawdown: %{x:.1f}%<extra></extra>',
                 ))
 
             # Add markers for selected leverage levels
@@ -1833,88 +1551,31 @@ with tab1:
             for L in selected_leverages:
                 if L in all_leverages:
                     idx = all_leverages.index(L)
-                    sharpe_val = all_sharpes[idx]
                     name, color, _ = get_leverage_style(L)
-                    fig_sharpe.add_trace(go.Scatter(
-                        x=[L],
-                        y=[sharpe_val],
+                    fig_risk.add_trace(go.Scatter(
+                        x=[all_drawdowns[idx]],
+                        y=[all_returns[idx]],
                         mode='markers+text',
-                        marker=dict(size=12, color=color, line=dict(width=2, color='white')),
-                        text=[f'{name}<br>{sharpe_val:.1f}'],
+                        marker=dict(size=14, color=color, line=dict(width=2, color='white')),
+                        text=[f'{L}x'],
                         textposition='top center',
                         textfont=dict(size=10),
                         name=name,
                         showlegend=False,
-                        hovertemplate=f'{name}<br>Sharpe: {sharpe_val:.2f}<extra></extra>',
+                        hovertemplate=f'{name}<br>Return: %{{y:.1f}}%<br>Drawdown: %{{x:.1f}}%<extra></extra>',
                     ))
 
-            # Add vertical line at Aave max
-            fig_sharpe.add_vline(x=int(L_aave), line_dash="dot", line_color="#adb5bd", opacity=0.7,
-                                 annotation_text=f"Aave max ({int(L_aave)}x)", annotation_position="top")
-
-            max_sharpe = max(all_sharpes) if all_sharpes else 1
-            fig_sharpe.update_layout(
-                xaxis_title="Leverage",
-                yaxis_title="Sharpe Ratio",
-                height=320,
-                yaxis=dict(range=[0, max(max_sharpe * 1.25, 1.5)]),  # Extra headroom for labels
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            )
-            st.plotly_chart(fig_sharpe, width='stretch')
-
-        with col2:
-            st.markdown("**Return vs Risk**")
-            st.caption("Each point shows leverage's return (y) vs drawdown (x). Ideal = top-left (high return, low drawdown). Lines from origin show risk/return slope.")
-            # Return vs Max Drawdown scatter
-            selected_levs = sorted(results.keys())
-            returns = [results[L].metrics['annualized_return'] * 100 for L in selected_levs]
-            drawdowns = [abs(results[L].metrics['max_drawdown']) * 100 for L in selected_levs]
-
-            fig_risk = go.Figure()
-
-            # Draw lines from origin to each point
-            for i, L in enumerate(selected_levs):
-                name, color, _ = get_leverage_style(L)
-                if drawdowns[i] > 0:
-                    fig_risk.add_trace(go.Scatter(
-                        x=[0, drawdowns[i]],
-                        y=[0, returns[i]],
-                        mode='lines',
-                        line=dict(color=color, width=1.5, dash='dot'),
-                        showlegend=False,
-                        hoverinfo='skip',
-                    ))
-
-            # Add points on top
-            for i, L in enumerate(selected_levs):
-                name, color, _ = get_leverage_style(L)
-                size = 12 if L <= int(L_aave) else 20
-                fig_risk.add_trace(go.Scatter(
-                    x=[drawdowns[i]],
-                    y=[returns[i]],
-                    mode='markers+text',
-                    text=[name],
-                    textposition='middle left',
-                    marker=dict(size=size, color=color),
-                    name=name,
-                    showlegend=False,
-                    hovertemplate=f"{name}<br>Return: %{{y:.1f}}%<br>Drawdown: %{{x:.1f}}%<extra></extra>",
-                ))
-
-            # Add padding to axes for labels
-            max_dd = max(drawdowns) if drawdowns else 1
-            min_dd = min(drawdowns) if drawdowns else 0
-            max_ret = max(returns) if returns else 1
+            max_dd = max(all_drawdowns) if all_drawdowns else 1
+            max_ret = max(all_returns) if all_returns else 1
             fig_risk.update_layout(
                 xaxis_title="Max Drawdown (%)",
                 yaxis_title="Annualized Return (%)",
-                height=320,
-                xaxis=dict(range=[min_dd - max_dd * 0.4, max_dd * 1.3]),
-                yaxis=dict(range=[0, max_ret * 1.2]),
-                margin=dict(r=20),
-                showlegend=False,
+                height=350,
+                xaxis=dict(range=[0, max_dd * 1.15]),
+                yaxis=dict(range=[0, max_ret * 1.15]),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             )
-            st.plotly_chart(fig_risk, width='stretch')
+            st.plotly_chart(fig_risk, use_container_width=True)
 
     # =========================================================================
     # Historical Analysis Section
@@ -1926,51 +1587,58 @@ with tab1:
     # Summary stats
     stats = get_summary_stats(df_filtered)
 
-    col1, col2, col3, col4 = st.columns(4)
+    # Check if all spreads are positive (100% days positive)
+    all_positive = stats['spread']['pct_positive'] >= 99.9
+
+    if all_positive:
+        st.info("📈 **All spreads positive!** The stETH yield exceeded ETH borrow cost every single day in this period.")
+
+    col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Date Range", f"{stats['date_range']['n_days']} days")
     col2.metric("Mean Spread", f"{stats['spread']['mean']*100:.2f}%")
     col3.metric("Days Positive", f"{stats['spread']['pct_positive']:.1f}%")
     col4.metric("Min Spread", f"{stats['spread']['min']*100:.2f}%")
+    col5.metric("Max Spread", f"{stats['spread']['max']*100:.2f}%")
 
-    # Historical rates plot (3 rows: Rates, Spread, Yield by Leverage)
+    # Historical rates plot (2 rows: Rates+Spread combined, Yield by Leverage)
     st.markdown("**Historical Rates & Yields**")
-    st.caption("Top: stETH yield (green) vs ETH borrow cost (red). Middle: raw spread between them. Bottom: what each leverage level would have earned daily.")
+    st.caption("Top: stETH yield (green), ETH borrow cost (red), and spread (blue filled). Bottom: what each leverage level would have earned daily.")
 
-    fig_hist = make_subplots(rows=3, cols=1, shared_xaxes=True,
-                             row_heights=[0.35, 0.25, 0.4],
-                             subplot_titles=("Rates", "Spread", "Net Yield by Leverage"),
+    fig_hist = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                             row_heights=[0.45, 0.55],
+                             subplot_titles=("Rates & Spread", "Net Yield by Leverage"),
                              vertical_spacing=0.08)
 
-    # Row 1: Rates
+    # Row 1: Rates + Spread on same axis (spread first so it's behind)
+    fig_hist.add_trace(go.Scatter(
+        x=df_filtered.index, y=df_filtered['spread_raw'] * 100,
+        name='Spread', fill='tozeroy',
+        line=dict(color='#2E86AB', width=1),
+        fillcolor='rgba(46, 134, 171, 0.3)',
+    ), row=1, col=1)
+
     fig_hist.add_trace(go.Scatter(
         x=df_filtered.index, y=df_filtered['r_stake'] * 100,
-        name='stETH Yield', line=dict(color='#28A745'),
+        name='stETH Yield', line=dict(color='#28A745', width=2),
     ), row=1, col=1)
 
     fig_hist.add_trace(go.Scatter(
         x=df_filtered.index, y=df_filtered['r_borrow'] * 100,
-        name='ETH Borrow', line=dict(color='#DC3545'),
+        name='ETH Borrow', line=dict(color='#DC3545', width=2),
     ), row=1, col=1)
 
-    # Row 2: Spread
-    fig_hist.add_trace(go.Scatter(
-        x=df_filtered.index, y=df_filtered['spread_raw'] * 100,
-        name='Raw Spread', fill='tozeroy',
-        line=dict(color='#2E86AB'),
-        showlegend=False,
-    ), row=2, col=1)
+    fig_hist.add_hline(y=0, row=1, col=1, line_dash="dash", line_color="gray", line_width=0.5)
 
-    fig_hist.add_hline(y=0, row=2, col=1, line_dash="dash", line_color="black")
-
-    # Row 3: Yield by Leverage
+    # Row 2: Yield by Leverage
     if bt_leverage_levels:
         for L in sorted(bt_leverage_levels):
             name, color, width = get_leverage_style(L)
             yields = []
+            # Calculate psi for this leverage (min LLTV needed at HF=1.05)
+            lt = (L - 1) / L
+            llt_needed = min(lt * 1.05, liq_ltv_max)
+            p = max(0, psi(llt_needed, params['beta_safe'], params['liq_ltv_clp'], params['liq_ltv_c'])) if L > L_aave else 0
             for _, row in df_filtered.iterrows():
-                lt = ltv_from_leverage(L)
-                llt = lt * 1.05  # Assume HF=1.05
-                p = psi(llt, params['beta_safe'], params['liq_ltv_clp'], params['liq_ltv_c'])
                 y = looped_yield_from_leverage(row['r_stake'], row['r_borrow'], L, ir_u, p)
                 yields.append(y * 100)
 
@@ -1978,46 +1646,44 @@ with tab1:
                 x=df_filtered.index, y=yields,
                 name=name,
                 line=dict(color=color, width=width),
-            ), row=3, col=1)
+            ), row=2, col=1)
 
-        fig_hist.add_hline(y=0, row=3, col=1, line_dash="dash", line_color="black")
+        fig_hist.add_hline(y=0, row=2, col=1, line_dash="dash", line_color="black")
 
-    fig_hist.update_layout(height=800, showlegend=True,
+    fig_hist.update_layout(height=650, showlegend=True,
                            legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.02),
                            hovermode='x unified')
     fig_hist.update_yaxes(title_text="APR (%)", row=1, col=1)
-    fig_hist.update_yaxes(title_text="Spread (%)", row=2, col=1)
-    fig_hist.update_yaxes(title_text="Net Yield (%)", row=3, col=1)
+    fig_hist.update_yaxes(title_text="Net Yield (%)", row=2, col=1)
 
     st.plotly_chart(fig_hist, width='stretch')
 
     # =========================================================================
     # Spread Risk Analysis (Tail Risk & Worst Periods)
     # =========================================================================
-    st.markdown("**Spread Risk Analysis**")
-    st.caption("Tail risk metrics showing how bad things can get. Important for stress-testing strategy resilience.")
-
-    # Calculate tail risk metrics
-    spread_data = df_filtered['spread_raw'] * 100  # Convert to %
-    spread_p5 = spread_data.quantile(0.05)
-    spread_min = spread_data.min()
-    pct_negative_spread = (spread_data < 0).mean() * 100
-    pct_severe = (spread_data < -1).mean() * 100
-
-    # 1. Tail Risk Metrics (2 columns)
-    col1, col2 = st.columns(2)
-    col1.metric("Worst spread ever", f"{spread_min:.2f}%")
-    col2.metric("Days with negative spread", f"{pct_negative_spread:.1f}%")
-
-    # 2. Rolling Return Analysis with window toggle
+    # Rolling Return Analysis with window toggle
     st.markdown("**Rolling Return Analysis**")
+
+    # Auto-select appropriate default based on data length
+    if len(df_filtered) <= 14:
+        default_roll = "1d"
+    elif len(df_filtered) <= 45:
+        default_roll = "7d"
+    else:
+        default_roll = "30d"
+
+    # Force update if data length changed significantly
+    data_len_bucket = "short" if len(df_filtered) <= 14 else ("medium" if len(df_filtered) <= 45 else "long")
+    if "roll_return_data_bucket" not in st.session_state or st.session_state.roll_return_data_bucket != data_len_bucket:
+        st.session_state.roll_return_data_bucket = data_len_bucket
+        st.session_state.roll_return_window = default_roll
 
     roll_window_col, _ = st.columns([1, 3])
     with roll_window_col:
         roll_window_label = st.segmented_control(
             "Window",
             ["1d", "7d", "30d"],
-            default="30d",
+            default=st.session_state.get("roll_return_window", default_roll),
             label_visibility="collapsed",
             key="roll_return_window"
         )
@@ -2045,11 +1711,13 @@ with tab1:
                 best = rolling_ret.max()
 
                 name, color, _ = get_leverage_style(L)
+                # Use more decimals for small daily returns, fewer for longer periods
+                decimals = 2 if roll_window <= 7 else 1
                 summary_rows.append({
                     'Leverage': name,
-                    'Worst Return': f"{worst:.1f}%",
-                    'Median Return': f"{median:.1f}%",
-                    'Best Return': f"{best:.1f}%",
+                    'Worst Return': f"{worst:.{decimals}f}%",
+                    'Median Return': f"{median:.{decimals}f}%",
+                    'Best Return': f"{best:.{decimals}f}%",
                     '% Periods Lost': f"{pct_negative:.1f}%",
                 })
 
@@ -2125,139 +1793,19 @@ with tab1:
 # =============================================================================
 with tab3:
     st.header("Time to Liquidation")
+    st.caption("ℹ️ Uses: Rates, LTVs, IR Model")
 
     # =========================================================================
-    # Chart: HF vs Spread Sensitivity - Contour Heatmaps
+    # Chart: Aave vs Twyne - Survival by Health Factor (MOVED TO TOP)
     # =========================================================================
-    st.markdown("**HF vs Spread Sensitivity: Aave vs Twyne**")
-    st.caption("Contour maps showing days to liquidation. Green = safe (>365 days), Red = danger (<30 days).")
-
-    # Grid for heatmap (HF limited to 1.01-1.10)
-    hf_range_sens = np.linspace(1.01, 1.10, 40)
-    spread_range_sens = np.linspace(-0.10, 0.02, 60)  # -10% to +2%
-    HF_grid, SPREAD_grid = np.meshgrid(hf_range_sens, spread_range_sens, indexing='ij')
-
-    # Aave: r_net = spread (no Ψ×IR cost)
-    aave_rnet = SPREAD_grid
-    aave_decay = 1 + aave_rnet / (1 + r_borrow)
-    aave_decay_safe = np.where(aave_decay > 0, aave_decay, 1)
-    aave_tliq = np.where(
-        aave_rnet >= 0, 500,
-        np.where(aave_decay <= 0, 500,
-                 np.clip(-365 * np.log(HF_grid) / np.log(aave_decay_safe), 0, 500))
-    )
-
-    # Twyne: r_net = spread - Ψ×IR (Ψ at max LLTV)
-    twyne_psi_val = liq_ltv_max / (beta_safe * liq_ltv_clp) - liq_ltv_c / liq_ltv_clp
-    twyne_psi_val = max(twyne_psi_val, 0)
-    ir_u_val = interest_rate(utilization)
-    twyne_rnet = SPREAD_grid - twyne_psi_val * ir_u_val
-    twyne_decay = 1 + twyne_rnet / (1 + r_borrow)
-    twyne_decay_safe = np.where(twyne_decay > 0, twyne_decay, 1)
-    twyne_tliq = np.where(
-        twyne_rnet >= 0, 500,
-        np.where(twyne_decay <= 0, 500,
-                 np.clip(-365 * np.log(HF_grid) / np.log(twyne_decay_safe), 0, 500))
-    )
-
-    # 2x2 grid: contour heatmaps on top, spread distribution histogram below
-    fig_sens = make_subplots(
-        rows=2, cols=2,
-        row_heights=[0.8, 0.2],
-        subplot_titles=("Aave (no Ψ×IR)", "Twyne (with Ψ×IR)", "", ""),
-        shared_xaxes=True,
-        vertical_spacing=0.05,
-        horizontal_spacing=0.12
-    )
-
-    # Row 1: Contour heatmaps
-    fig_sens.add_trace(go.Contour(
-        x=spread_range_sens * 100, y=hf_range_sens, z=aave_tliq,
-        colorscale='RdYlGn', zmin=0, zmax=365,
-        contours=dict(showlines=True, showlabels=True, start=30, end=365, size=60),
-        hovertemplate='Spread: %{x:.1f}%<br>HF: %{y:.2f}<br>Days: %{z:.0f}<extra>Aave</extra>',
-        showscale=False
-    ), row=1, col=1)
-
-    fig_sens.add_trace(go.Contour(
-        x=spread_range_sens * 100, y=hf_range_sens, z=twyne_tliq,
-        colorscale='RdYlGn', zmin=0, zmax=365,
-        contours=dict(showlines=True, showlabels=True, start=30, end=365, size=60),
-        hovertemplate='Spread: %{x:.1f}%<br>HF: %{y:.2f}<br>Days: %{z:.0f}<extra>Twyne</extra>',
-        colorbar=dict(title='Days', x=1.02)
-    ), row=1, col=2)
-
-    # Row 2: Historical spread distribution (negative spreads only)
-    spread_hist_data = df_filtered['spread_raw'].dropna() * 100  # Convert to %
-    spread_negative = spread_hist_data[spread_hist_data < 0]
-
-    # Calculate % of time in negative spread
-    pct_negative = len(spread_negative) / len(spread_hist_data) * 100
-
-    fig_sens.add_trace(go.Histogram(
-        x=spread_negative,
-        xbins=dict(start=-10, end=0, size=0.5),
-        histnorm='percent',
-        marker_color='rgba(100, 100, 100, 0.6)',
-        showlegend=False,
-        hovertemplate='Spread: %{x:.1f}%<br>Frequency: %{y:.1f}%<extra></extra>'
-    ), row=2, col=1)
-    fig_sens.add_trace(go.Histogram(
-        x=spread_negative,
-        xbins=dict(start=-10, end=0, size=0.5),
-        histnorm='percent',
-        marker_color='rgba(100, 100, 100, 0.6)',
-        showlegend=False,
-        hovertemplate='Spread: %{x:.1f}%<br>Frequency: %{y:.1f}%<extra></extra>'
-    ), row=2, col=2)
-
-    # Add annotation showing % of time negative
-    fig_sens.add_annotation(
-        x=-9, y=0.9, xref="x3", yref="y3 domain",
-        text=f"Negative {pct_negative:.0f}% of time",
-        showarrow=False, font=dict(size=9, color="gray")
-    )
-
-    # Safe zone marker
-    fig_sens.add_vline(x=0, line_dash="dot", line_color="green", row=1, col=1,
-                       annotation=dict(text="SAFE", font_color="green"))
-    twyne_safe_threshold = twyne_psi_val * ir_u_val * 100
-    fig_sens.add_vline(x=twyne_safe_threshold, line_dash="dot", line_color="green", row=1, col=2,
-                       annotation=dict(text="SAFE", font_color="green"))
-
-    # Current spread marker (on both rows)
-    current_spread_pct = (r_stake - r_borrow) * 100
-    for row in [1, 2]:
-        fig_sens.add_vline(x=current_spread_pct, line_dash="dash", line_color="blue", row=row, col=1,
-                           annotation=dict(text="Now", font_color="blue") if row == 1 else None)
-        fig_sens.add_vline(x=current_spread_pct, line_dash="dash", line_color="blue", row=row, col=2,
-                           annotation=dict(text="Now", font_color="blue") if row == 1 else None)
-
-    fig_sens.update_layout(height=420, margin=dict(l=60, r=80, t=60, b=40))
-    fig_sens.update_xaxes(title_text="Spread (%)", row=2, col=1)
-    fig_sens.update_xaxes(title_text="Spread (%)", row=2, col=2)
-    fig_sens.update_yaxes(title_text="Health Factor", row=1, col=1)
-    fig_sens.update_yaxes(title_text="Health Factor", row=1, col=2)
-    fig_sens.update_yaxes(showticklabels=False, title_text="", row=2, col=1)
-    fig_sens.update_yaxes(showticklabels=False, title_text="", row=2, col=2)
-
-    st.plotly_chart(fig_sens, use_container_width=True)
-
-    st.caption(f"Find your HF (y-axis) and spread (x-axis). Contour lines at 30, 90, 150... days. Twyne's safe zone shifts right by {twyne_psi_val * ir_u_val * 100:.2f}% due to Ψ×IR.")
-
-    # =========================================================================
-    # Chart: Aave vs Twyne - Survival by Health Factor
-    # =========================================================================
-    st.markdown("---")
-    st.markdown("**Aave vs Twyne: Survival & Loss by Health Factor**")
-    st.caption("At each HF, both protocols run at their implied leverage (L = HF / (HF - LLTV)). Lower HF = higher leverage.")
+    st.markdown("**How Long Can You Survive a Negative Spread?**")
+    st.caption("Compare Aave vs Twyne at different Health Factors. Lower HF = higher leverage = faster losses. Shaded bands show the range from mild (-1%) to severe (-5%) negative spreads.")
 
     # Spread bounds for analysis
     spread_best = -0.01
-    spread_worst = -0.10
+    spread_worst = -0.05
 
-    # Interest rate and Ψ for Twyne
-    ir_u = interest_rate(utilization)
+    # Ψ for Twyne (ir_u already calculated globally with sidebar params)
     twyne_psi = liq_ltv_max / (beta_safe * liq_ltv_clp) - liq_ltv_c / liq_ltv_clp
     twyne_psi = max(twyne_psi, 0)
 
@@ -2267,11 +1815,10 @@ with tab3:
             return min(-365 * np.log(hf_val) / np.log(decay), 1000)
         return 1000
 
-    # HF range (1.01 to 1.20)
-    hf_range_compare = np.linspace(1.01, 1.20, 80)
+    # HF range (1.01 to 1.10)
+    hf_range_compare = np.linspace(1.01, 1.10, 80)
 
     # Implied leverage at each HF: L = HF / (HF - LLTV)
-    # Only valid when HF > LLTV
     aave_lev_from_hf = hf_range_compare / (hf_range_compare - liq_ltv_c)
     twyne_lev_from_hf = hf_range_compare / (hf_range_compare - liq_ltv_max)
 
@@ -2284,190 +1831,262 @@ with tab3:
     twyne_hf_valid = hf_range_compare[twyne_hf_valid_mask]
     twyne_lev_valid = twyne_lev_from_hf[twyne_hf_valid_mask]
 
-    # Compute T_liq and loss for each HF (using same spreads)
+    # Compute T_liq and loss for each HF
     aave_tliq_best_hf = np.array([compute_tliq_scalar(hf, spread_best) for hf in aave_hf_valid])
     aave_tliq_worst_hf = np.array([compute_tliq_scalar(hf, spread_worst) for hf in aave_hf_valid])
-    aave_loss_best_hf = -(aave_lev_valid * spread_best + r_borrow) * 100 / 365  # Daily
-    aave_loss_worst_hf = -(aave_lev_valid * spread_worst + r_borrow) * 100 / 365  # Daily
+    aave_loss_best_hf = -(aave_lev_valid * spread_best + r_borrow) * 100 / 365
+    aave_loss_worst_hf = -(aave_lev_valid * spread_worst + r_borrow) * 100 / 365
 
     twyne_tliq_best_hf = np.array([compute_tliq_scalar(hf, spread_best - twyne_psi * ir_u) for hf in twyne_hf_valid])
     twyne_tliq_worst_hf = np.array([compute_tliq_scalar(hf, spread_worst - twyne_psi * ir_u) for hf in twyne_hf_valid])
-    twyne_loss_best_hf = -(twyne_lev_valid * spread_best - twyne_lev_valid * twyne_psi * ir_u + r_borrow) * 100 / 365  # Daily
-    twyne_loss_worst_hf = -(twyne_lev_valid * spread_worst - twyne_lev_valid * twyne_psi * ir_u + r_borrow) * 100 / 365  # Daily
+    twyne_loss_best_hf = -(twyne_lev_valid * spread_best - twyne_lev_valid * twyne_psi * ir_u + r_borrow) * 100 / 365
+    twyne_loss_worst_hf = -(twyne_lev_valid * spread_worst - twyne_lev_valid * twyne_psi * ir_u + r_borrow) * 100 / 365
 
     fig_hf = make_subplots(
         rows=1, cols=2,
-        subplot_titles=("Days to Liquidation", "Daily Loss %"),
+        subplot_titles=("Time Until Liquidation (days)", "Daily Capital Loss (%)"),
         horizontal_spacing=0.12
     )
 
-    # Twyne band (blue, behind)
-    fig_hf.add_trace(
-        go.Scatter(x=twyne_hf_valid, y=twyne_tliq_best_hf, mode='lines',
-                   name='Twyne -1%', line=dict(color='#2196f3', width=2),
-                   hovertemplate='Twyne @ -1%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.0f} days<extra></extra>',
-                   customdata=twyne_lev_valid,
-                   legendgroup='twyne_hf', showlegend=True),
-        row=1, col=1
-    )
-    fig_hf.add_trace(
-        go.Scatter(x=twyne_hf_valid, y=twyne_tliq_worst_hf, mode='lines',
-                   name='Twyne -10%', line=dict(color='#2196f3', width=2, dash='dash'),
-                   hovertemplate='Twyne @ -10%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.0f} days<extra></extra>',
-                   customdata=twyne_lev_valid,
-                   fill='tonexty', fillcolor='rgba(33, 150, 243, 0.2)',
-                   legendgroup='twyne_hf', showlegend=True),
-        row=1, col=1
-    )
-    fig_hf.add_trace(
-        go.Scatter(x=twyne_hf_valid, y=-twyne_loss_best_hf, mode='lines',
-                   line=dict(color='#2196f3', width=2),
-                   hovertemplate='Twyne @ -1%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.3f}%/day<extra></extra>',
-                   customdata=twyne_lev_valid,
-                   legendgroup='twyne_hf', showlegend=False),
-        row=1, col=2
-    )
-    fig_hf.add_trace(
-        go.Scatter(x=twyne_hf_valid, y=-twyne_loss_worst_hf, mode='lines',
-                   line=dict(color='#2196f3', width=2, dash='dash'),
-                   hovertemplate='Twyne @ -10%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.3f}%/day<extra></extra>',
-                   customdata=twyne_lev_valid,
-                   fill='tonexty', fillcolor='rgba(33, 150, 243, 0.2)',
-                   legendgroup='twyne_hf', showlegend=False),
-        row=1, col=2
-    )
+    # Aave band (orange)
+    fig_hf.add_trace(go.Scatter(x=aave_hf_valid, y=aave_tliq_best_hf, mode='lines',
+        line=dict(color='#ff9800', width=2.5),
+        hovertemplate='Aave @ -1%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.0f} days<extra></extra>',
+        customdata=aave_lev_valid, showlegend=False), row=1, col=1)
+    fig_hf.add_trace(go.Scatter(x=aave_hf_valid, y=aave_tliq_worst_hf, mode='lines',
+        line=dict(color='#ff9800', width=2.5, dash='dash'),
+        hovertemplate='Aave @ -5%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.0f} days<extra></extra>',
+        customdata=aave_lev_valid, fill='tonexty', fillcolor='rgba(255, 152, 0, 0.3)', showlegend=False), row=1, col=1)
+    fig_hf.add_trace(go.Scatter(x=aave_hf_valid, y=-aave_loss_best_hf, mode='lines',
+        line=dict(color='#ff9800', width=2.5),
+        hovertemplate='Aave @ -1%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.3f}%/day<extra></extra>',
+        customdata=aave_lev_valid, showlegend=False), row=1, col=2)
+    fig_hf.add_trace(go.Scatter(x=aave_hf_valid, y=-aave_loss_worst_hf, mode='lines',
+        line=dict(color='#ff9800', width=2.5, dash='dash'),
+        hovertemplate='Aave @ -5%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.3f}%/day<extra></extra>',
+        customdata=aave_lev_valid, fill='tonexty', fillcolor='rgba(255, 152, 0, 0.3)', showlegend=False), row=1, col=2)
 
-    # Aave band (orange, on top)
-    fig_hf.add_trace(
-        go.Scatter(x=aave_hf_valid, y=aave_tliq_best_hf, mode='lines',
-                   name='Aave -1%', line=dict(color='#ff9800', width=2.5),
-                   hovertemplate='Aave @ -1%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.0f} days<extra></extra>',
-                   customdata=aave_lev_valid,
-                   legendgroup='aave_hf', showlegend=True),
-        row=1, col=1
-    )
-    fig_hf.add_trace(
-        go.Scatter(x=aave_hf_valid, y=aave_tliq_worst_hf, mode='lines',
-                   name='Aave -10%', line=dict(color='#ff9800', width=2.5, dash='dash'),
-                   hovertemplate='Aave @ -10%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.0f} days<extra></extra>',
-                   customdata=aave_lev_valid,
-                   fill='tonexty', fillcolor='rgba(255, 152, 0, 0.3)',
-                   legendgroup='aave_hf', showlegend=True),
-        row=1, col=1
-    )
-    fig_hf.add_trace(
-        go.Scatter(x=aave_hf_valid, y=-aave_loss_best_hf, mode='lines',
-                   line=dict(color='#ff9800', width=2.5),
-                   hovertemplate='Aave @ -1%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.3f}%/day<extra></extra>',
-                   customdata=aave_lev_valid,
-                   legendgroup='aave_hf', showlegend=False),
-        row=1, col=2
-    )
-    fig_hf.add_trace(
-        go.Scatter(x=aave_hf_valid, y=-aave_loss_worst_hf, mode='lines',
-                   line=dict(color='#ff9800', width=2.5, dash='dash'),
-                   hovertemplate='Aave @ -10%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.3f}%/day<extra></extra>',
-                   customdata=aave_lev_valid,
-                   fill='tonexty', fillcolor='rgba(255, 152, 0, 0.3)',
-                   legendgroup='aave_hf', showlegend=False),
-        row=1, col=2
-    )
+    # Twyne band (blue)
+    fig_hf.add_trace(go.Scatter(x=twyne_hf_valid, y=twyne_tliq_best_hf, mode='lines',
+        line=dict(color='#2196f3', width=2),
+        hovertemplate='Twyne @ -1%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.0f} days<extra></extra>',
+        customdata=twyne_lev_valid, showlegend=False), row=1, col=1)
+    fig_hf.add_trace(go.Scatter(x=twyne_hf_valid, y=twyne_tliq_worst_hf, mode='lines',
+        line=dict(color='#2196f3', width=2, dash='dash'),
+        hovertemplate='Twyne @ -5%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.0f} days<extra></extra>',
+        customdata=twyne_lev_valid, fill='tonexty', fillcolor='rgba(33, 150, 243, 0.2)', showlegend=False), row=1, col=1)
+    fig_hf.add_trace(go.Scatter(x=twyne_hf_valid, y=-twyne_loss_best_hf, mode='lines',
+        line=dict(color='#2196f3', width=2),
+        hovertemplate='Twyne @ -1%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.3f}%/day<extra></extra>',
+        customdata=twyne_lev_valid, showlegend=False), row=1, col=2)
+    fig_hf.add_trace(go.Scatter(x=twyne_hf_valid, y=-twyne_loss_worst_hf, mode='lines',
+        line=dict(color='#2196f3', width=2, dash='dash'),
+        hovertemplate='Twyne @ -5%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.3f}%/day<extra></extra>',
+        customdata=twyne_lev_valid, fill='tonexty', fillcolor='rgba(33, 150, 243, 0.2)', showlegend=False), row=1, col=2)
+
+    # Legend traces
+    fig_hf.add_trace(go.Scatter(x=[None], y=[None], mode='lines', name='Twyne', line=dict(color='#2196f3', width=3)))
+    fig_hf.add_trace(go.Scatter(x=[None], y=[None], mode='lines', name='Aave', line=dict(color='#ff9800', width=3)))
+    fig_hf.add_trace(go.Scatter(x=[None], y=[None], mode='lines', name='-5% spread', line=dict(color='black', width=2, dash='dash')))
+    fig_hf.add_trace(go.Scatter(x=[None], y=[None], mode='lines', name='-1% spread', line=dict(color='black', width=2)))
 
     fig_hf.update_layout(
-        height=350,
-        hovermode='x unified',
-        margin=dict(l=60, t=60, r=60),
-        legend=dict(
-            orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5,
-            title="Protocol @ Spread"
-        )
+        height=350, hovermode='x unified', margin=dict(l=60, t=80, r=60),
+        legend=dict(orientation='h', yanchor='bottom', y=1.18, xanchor='right', x=1, bgcolor='rgba(255,255,255,0.9)')
     )
-
     fig_hf.update_yaxes(title_text="Days", row=1, col=1)
     fig_hf.update_yaxes(title_text="Daily Loss % (down=worse)", row=1, col=2)
-    fig_hf.update_xaxes(title_text="Health Factor", row=1, col=1)
-    fig_hf.update_xaxes(title_text="Health Factor", row=1, col=2)
+
+    key_hf = [1.02, 1.04, 1.06, 1.08, 1.10]
+    def make_tick(hf):
+        aave_lev = hf / (hf - liq_ltv_c)
+        twyne_lev = hf / (hf - liq_ltv_max)
+        return f"{hf}<br><span style='color:#ff9800'>{aave_lev:.0f}x</span> / <span style='color:#2196f3'>{twyne_lev:.0f}x</span>"
+
+    fig_hf.update_xaxes(title_text="Health Factor", row=1, col=1, tickvals=key_hf, ticktext=[make_tick(hf) for hf in key_hf])
+    fig_hf.update_xaxes(title_text="Health Factor", row=1, col=2, tickvals=key_hf, ticktext=[make_tick(hf) for hf in key_hf])
 
     st.plotly_chart(fig_hf, use_container_width=True)
 
-    st.caption(f"At same HF, Aave has lower leverage (less risk, less loss). But Twyne can go to lower HF (down to {liq_ltv_max:.0%}) while Aave stops at {liq_ltv_c:.0%}. Hover shows implied leverage at each HF.")
-
     # =========================================================================
-    # Chart: Twyne at Different Liquidation LTVs
+    # Chart: HF vs Spread Sensitivity - Contour Heatmaps
     # =========================================================================
     st.markdown("---")
-    st.markdown("**Twyne: Effect of Liquidation LTV Choice**")
-    st.caption("How does choosing different boosted liquidation LTVs affect survival time? Higher LLTV = higher leverage possible, but also higher Ψ×IR cost.")
+    st.markdown("**HF vs Spread Sensitivity: Aave vs Twyne**")
+    st.caption("Contour maps showing days to liquidation. Green = safe (>365 days), Red = danger (<30 days).")
 
-    # LLTV levels to compare
-    lltv_options = np.array([0.95, 0.96, 0.97, 0.98])
-    lltv_colors = ['#ff9800', '#8bc34a', '#03a9f4', '#9c27b0']  # Orange to purple gradient
+    # Grid for heatmap (HF limited to 1.01-1.05, negative spreads only)
+    hf_range_sens = np.linspace(1.01, 1.05, 40)
+    spread_range_sens = np.linspace(-0.05, 0.0, 50)  # -5% to 0%
+    HF_grid, SPREAD_grid = np.meshgrid(hf_range_sens, spread_range_sens, indexing='ij')
 
-    # Fixed spread for comparison
-    comparison_spread = -0.02  # -2% spread
+    # Aave: r_net = spread (no Ψ×IR cost)
+    aave_rnet = SPREAD_grid
+    aave_decay = 1 + aave_rnet / (1 + r_borrow)
+    aave_decay_safe = np.where(aave_decay > 0, aave_decay, 1)
+    aave_tliq = np.where(
+        aave_rnet >= 0, 500,
+        np.where(aave_decay <= 0, 500,
+                 np.clip(-365 * np.log(HF_grid) / np.log(aave_decay_safe), 0, 500))
+    )
 
-    fig_lltv = make_subplots(
-        rows=1, cols=2,
-        subplot_titles=("Days to Liquidation", "Daily Loss %"),
+    # Twyne: r_net = spread - Ψ×IR (Ψ at max LLTV, using sidebar IR params)
+    twyne_psi_val = liq_ltv_max / (beta_safe * liq_ltv_clp) - liq_ltv_c / liq_ltv_clp
+    twyne_psi_val = max(twyne_psi_val, 0)
+    # ir_u already calculated globally with sidebar params
+    twyne_rnet = SPREAD_grid - twyne_psi_val * ir_u
+    twyne_decay = 1 + twyne_rnet / (1 + r_borrow)
+    twyne_decay_safe = np.where(twyne_decay > 0, twyne_decay, 1)
+    twyne_tliq = np.where(
+        twyne_rnet >= 0, 500,
+        np.where(twyne_decay <= 0, 500,
+                 np.clip(-365 * np.log(HF_grid) / np.log(twyne_decay_safe), 0, 500))
+    )
+
+    # Compute delta (Aave - Twyne): positive = Aave survives longer
+    delta_tliq = aave_tliq - twyne_tliq
+
+    # 2x2 grid: Aave heatmap + Delta heatmap on top, histograms below
+    fig_sens = make_subplots(
+        rows=2, cols=2,
+        row_heights=[0.8, 0.2],
+        subplot_titles=("Aave: Days to Liquidation", "Twyne Cost (extra days Aave survives)", "", ""),
+        shared_xaxes=True,
+        vertical_spacing=0.05,
         horizontal_spacing=0.12
     )
 
-    for lltv, color in zip(lltv_options, lltv_colors):
-        # Compute Ψ at this LLTV
-        psi_lltv = lltv / (beta_safe * liq_ltv_clp) - liq_ltv_c / liq_ltv_clp
-        psi_lltv = max(psi_lltv, 0)
-        psi_cost = psi_lltv * ir_u
+    # Row 1: Contour heatmaps
+    # Dynamic zmax based on actual data
+    aave_tliq_valid = aave_tliq[np.isfinite(aave_tliq)]
+    aave_zmax = max(365, np.nanmax(aave_tliq_valid)) if len(aave_tliq_valid) > 0 else 365
+    contour_end = min(aave_zmax, 1000)  # Cap contour labels at 1000 for readability
+    fig_sens.add_trace(go.Contour(
+        x=spread_range_sens * 100, y=hf_range_sens, z=aave_tliq,
+        colorscale='RdYlGn', zmin=0, zmax=aave_zmax,
+        contours=dict(showlines=True, showlabels=True, start=30, end=contour_end, size=max(60, contour_end/6)),
+        hovertemplate='Spread: %{x:.1f}%<br>HF: %{y:.2f}<br>Days: %{z:.0f}<extra>Aave</extra>',
+        showscale=False
+    ), row=1, col=1)
 
-        # HF range (valid for this LLTV)
-        hf_range_lltv = np.linspace(1.01, 1.20, 60)
+    # Delta heatmap (shows extra days Aave survives vs Twyne)
+    # White at 0, darker blue = more days lost
+    # Dynamic range based on actual max delta
+    delta_max = np.nanmax(delta_tliq[np.isfinite(delta_tliq)])
+    delta_max = max(30, np.ceil(delta_max / 30) * 30)  # Round up to nearest 30, min 30
+    contour_size = max(10, delta_max / 5)  # ~5 contour lines
+    fig_sens.add_trace(go.Contour(
+        x=spread_range_sens * 100, y=hf_range_sens, z=delta_tliq,
+        colorscale=[[0, 'white'], [0.2, '#deebf7'], [0.4, '#9ecae1'], [0.6, '#4292c6'], [0.8, '#2171b5'], [1, '#084594']],
+        zmin=0, zmax=delta_max,
+        contours=dict(showlines=True, showlabels=True, labelfont=dict(size=11), start=0, end=delta_max, size=contour_size),
+        hovertemplate='Spread: %{x:.1f}%<br>HF: %{y:.2f}<br>Twyne loses: %{z:.0f} days<extra></extra>',
+        colorbar=dict(title='Days', x=1.02)
+    ), row=1, col=2)
 
-        # Implied leverage: L = HF / (HF - LLTV)
-        lev_at_hf = hf_range_lltv / (hf_range_lltv - lltv)
+    # Row 2: Historical spread distribution (ALL data, not filtered, showing negative range -5% to 0%)
+    spread_hist_all = df['spread_raw'].dropna() * 100  # Use full historical data, not filtered
+    spread_negative = spread_hist_all[(spread_hist_all >= -5) & (spread_hist_all < 0)]
 
-        # T_liq at each HF (with Ψ×IR cost)
-        effective_spread = comparison_spread - psi_cost
-        tliq_at_hf = np.array([compute_tliq_scalar(hf, effective_spread) for hf in hf_range_lltv])
+    # Calculate % of time in negative spread (all history)
+    pct_negative = len(spread_hist_all[spread_hist_all < 0]) / len(spread_hist_all) * 100
 
-        # Daily loss at each HF
-        loss_at_hf = -(lev_at_hf * comparison_spread - lev_at_hf * psi_cost + r_borrow) * 100 / 365
+    for col in [1, 2]:
+        fig_sens.add_trace(go.Histogram(
+            x=spread_negative,
+            xbins=dict(start=-5, end=0, size=0.25),
+            histnorm='percent',
+            marker_color='rgba(100, 100, 100, 0.6)',
+            showlegend=False,
+            hovertemplate='Spread: %{x:.1f}%<br>Frequency: %{y:.1f}%<extra></extra>'
+        ), row=2, col=col)
 
-        # Days to liquidation
-        fig_lltv.add_trace(
-            go.Scatter(x=hf_range_lltv, y=tliq_at_hf, mode='lines',
-                       name=f'LLTV {lltv*100:.0f}%',
-                       line=dict(color=color, width=2.5),
-                       hovertemplate=f'LLTV {lltv*100:.0f}%<br>HF %{{x:.2f}}: %{{y:.0f}} days<br>Ψ×IR: {psi_cost*100:.2f}%<extra></extra>',
-                       legendgroup=f'lltv_{lltv}'),
-            row=1, col=1
-        )
-
-        # Daily loss
-        fig_lltv.add_trace(
-            go.Scatter(x=hf_range_lltv, y=-loss_at_hf, mode='lines',
-                       line=dict(color=color, width=2.5),
-                       hovertemplate=f'LLTV {lltv*100:.0f}%<br>HF %{{x:.2f}}: %{{y:.3f}}%/day<extra></extra>',
-                       legendgroup=f'lltv_{lltv}', showlegend=False),
-            row=1, col=2
-        )
-
-    fig_lltv.update_layout(
-        height=350,
-        hovermode='x unified',
-        margin=dict(l=60, t=60, r=60),
-        legend=dict(
-            orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5,
-            title="Boosted Liq. LTV"
-        )
+    # Add annotation showing % of time negative (with historical context)
+    fig_sens.add_annotation(
+        x=-4.5, y=0.9, xref="x3", yref="y3 domain",
+        text=f"Negative {pct_negative:.0f}% of time (all history)",
+        showarrow=False, font=dict(size=9, color="gray")
     )
 
-    fig_lltv.update_yaxes(title_text="Days", row=1, col=1)
-    fig_lltv.update_yaxes(title_text="Daily Loss % (down=worse)", row=1, col=2)
-    fig_lltv.update_xaxes(title_text="Health Factor", row=1, col=1)
-    fig_lltv.update_xaxes(title_text="Health Factor", row=1, col=2)
+    # Current spread marker (on all columns) - only if negative
+    current_spread_pct = (r_stake - r_borrow) * 100
+    if current_spread_pct < 0:
+        for row in [1, 2]:
+            for col in [1, 2]:
+                # Add "Now" annotation on top row for both plots
+                annotation = dict(text="Now", font_color="blue") if row == 1 else None
+                fig_sens.add_vline(x=current_spread_pct, line_dash="dash", line_color="blue", row=row, col=col,
+                                   annotation=annotation)
 
-    st.plotly_chart(fig_lltv, use_container_width=True)
+    fig_sens.update_layout(height=420, margin=dict(l=60, r=80, t=60, b=40))
+    for col in [1, 2]:
+        fig_sens.update_xaxes(title_text="Spread (%)", range=[-5, 0], row=2, col=col)
+        fig_sens.update_xaxes(range=[-5, 0], row=1, col=col)
+        fig_sens.update_yaxes(showticklabels=False, title_text="", row=2, col=col)
+    fig_sens.update_yaxes(title_text="Health Factor", row=1, col=1)
 
-    st.caption(f"At spread = {comparison_spread*100:.0f}%. Higher LLTV lets you run at lower HF (more leverage), but Ψ×IR cost increases. Trade-off: more leverage vs shorter survival time.")
+    st.plotly_chart(fig_sens, use_container_width=True)
+
+    # =========================================================================
+    # Full Range Chart: Daily P&L from -5% to +2% spread (same format as survival chart)
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("**Full Spread Range: Daily P&L by Health Factor**")
+    st.caption("Shows both downside (negative spread) and upside (positive spread). Bands show range from -5% to +2% spread.")
+
+    # Spread bounds for full range analysis
+    spread_worst_full = -0.05  # -5%
+    spread_best_full = 0.02    # +2%
+
+    # Reuse HF range and leverage calculations from earlier
+    # aave_hf_valid, aave_lev_valid, twyne_hf_valid, twyne_lev_valid already defined
+
+    # Compute daily P&L for each HF at both spread bounds
+    # Daily P&L = (L * spread - cost) / 365
+    aave_pnl_worst = (aave_lev_valid * spread_worst_full) * 100 / 365
+    aave_pnl_best = (aave_lev_valid * spread_best_full) * 100 / 365
+    twyne_pnl_worst = (twyne_lev_valid * spread_worst_full - twyne_lev_valid * twyne_psi * ir_u) * 100 / 365
+    twyne_pnl_best = (twyne_lev_valid * spread_best_full - twyne_lev_valid * twyne_psi * ir_u) * 100 / 365
+
+    fig_full_pnl = go.Figure()
+
+    # Zero line
+    fig_full_pnl.add_hline(y=0, line_dash="dash", line_color="gray", line_width=1)
+
+    # Aave band (orange)
+    fig_full_pnl.add_trace(go.Scatter(x=aave_hf_valid, y=aave_pnl_best, mode='lines',
+        line=dict(color='#ff9800', width=2.5),
+        hovertemplate='Aave @ +2%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.3f}%/day<extra></extra>',
+        customdata=aave_lev_valid, showlegend=False))
+    fig_full_pnl.add_trace(go.Scatter(x=aave_hf_valid, y=aave_pnl_worst, mode='lines',
+        line=dict(color='#ff9800', width=2.5, dash='dash'),
+        hovertemplate='Aave @ -5%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.3f}%/day<extra></extra>',
+        customdata=aave_lev_valid, fill='tonexty', fillcolor='rgba(255, 152, 0, 0.3)', showlegend=False))
+
+    # Twyne band (blue)
+    fig_full_pnl.add_trace(go.Scatter(x=twyne_hf_valid, y=twyne_pnl_best, mode='lines',
+        line=dict(color='#2196f3', width=2),
+        hovertemplate='Twyne @ +2%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.3f}%/day<extra></extra>',
+        customdata=twyne_lev_valid, showlegend=False))
+    fig_full_pnl.add_trace(go.Scatter(x=twyne_hf_valid, y=twyne_pnl_worst, mode='lines',
+        line=dict(color='#2196f3', width=2, dash='dash'),
+        hovertemplate='Twyne @ -5%<br>HF %{x:.2f} (L=%{customdata:.1f}x): %{y:.3f}%/day<extra></extra>',
+        customdata=twyne_lev_valid, fill='tonexty', fillcolor='rgba(33, 150, 243, 0.2)', showlegend=False))
+
+    # Legend traces
+    fig_full_pnl.add_trace(go.Scatter(x=[None], y=[None], mode='lines', name='Twyne', line=dict(color='#2196f3', width=3)))
+    fig_full_pnl.add_trace(go.Scatter(x=[None], y=[None], mode='lines', name='Aave', line=dict(color='#ff9800', width=3)))
+    fig_full_pnl.add_trace(go.Scatter(x=[None], y=[None], mode='lines', name='-5% spread', line=dict(color='black', width=2, dash='dash')))
+    fig_full_pnl.add_trace(go.Scatter(x=[None], y=[None], mode='lines', name='+2% spread', line=dict(color='black', width=2)))
+
+    fig_full_pnl.update_layout(
+        height=350, hovermode='x unified', margin=dict(l=60, t=80, r=60),
+        legend=dict(orientation='h', yanchor='bottom', y=1.18, xanchor='right', x=1, bgcolor='rgba(255,255,255,0.9)')
+    )
+    fig_full_pnl.update_yaxes(title_text="Daily P&L % (up=gains, down=losses)")
+    fig_full_pnl.update_xaxes(title_text="Health Factor", tickvals=key_hf, ticktext=[make_tick(hf) for hf in key_hf])
+
+    st.plotly_chart(fig_full_pnl, use_container_width=True)
 
 # =============================================================================
 # Footer

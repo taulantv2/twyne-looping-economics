@@ -1,0 +1,1305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Credit Load-Balancer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      height: 100%;
+      overflow: hidden;
+    }
+
+    body {
+      background: #1a2418;
+      font-family: 'Courier New', monospace;
+      color: #9acd32;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+    }
+
+    svg {
+      flex: 1;
+      width: 100%;
+    }
+
+    h1 {
+      margin-bottom: 20px;
+      font-weight: normal;
+      letter-spacing: 4px;
+      font-size: 48px;
+    }
+
+    svg {
+      overflow: visible;
+    }
+
+    .flow-line {
+      stroke: #555555;
+      fill: none;
+    }
+
+
+    .section-label {
+      fill: #9acd32;
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+      text-anchor: middle;
+      letter-spacing: 2px;
+    }
+
+    .bar-label {
+      fill: #9acd32;
+      font-family: 'Courier New', monospace;
+      font-size: 9px;
+      text-anchor: middle;
+    }
+
+    .controls {
+      position: absolute;
+      top: 10px;
+      right: 20px;
+      display: flex;
+      gap: 10px;
+    }
+    .controls button {
+      background: #2a5a3a;
+      color: #9acd32;
+      border: 1px solid #6b8e23;
+      padding: 8px 12px;
+      cursor: pointer;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+    }
+    .controls button:hover {
+      background: #3a7a4a;
+    }
+
+    .logo {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      height: 40px;
+      opacity: 0.8;
+    }
+  </style>
+</head>
+<body>
+  <img src="twyne_logo_white_full.png" alt="Twyne" class="logo">
+  <h1>Credit Load-Balancer</h1>
+
+  <div class="controls">
+    <button id="playBtn" onclick="startAnimation()">▶ Play</button>
+  </div>
+
+  <svg id="viz" width="100%" height="100%"></svg>
+
+  <script>
+    const svg = document.getElementById('viz');
+    let isRunning = false;
+
+    // ===== CREDIT-DELEGATORS (dynamic) =====
+    // Delegators start FULL - they will delegate to CV over time
+    // Different capacities = different sizes and credit amounts
+    let lenders = [
+      { capacity: 60, level: 60, delegated: 0, withdrawing: 0, state: 'active', opacity: 1 },
+      { capacity: 40, level: 40, delegated: 0, withdrawing: 0, state: 'active', opacity: 1 },
+    ];
+    let TOTAL_LENDER_CAPACITY = 0;  // Starts 0, grows as delegation happens
+
+    // Dynamic lender config
+    const MIN_LENDERS = 1;
+    const MAX_LENDERS = 4;
+    const FADE_SPEED = 4.0;  // faster fade for quicker disappear
+    const WITHDRAW_SPEED = 30.0;
+    const DELEGATE_SPEED = 30.0;
+
+    // Dynamic borrower config
+    const MIN_BORROWERS = 1;
+    const MAX_BORROWERS = 4;
+
+    // Utilization thresholds
+    const UTIL_HIGH = 0.75;      // Add lender above this
+    const UTIL_LOW = 0.25;       // Lender withdraws below this
+    const UTIL_MID_LOW = 0.40;   // Add borrower range start
+    const UTIL_MID_HIGH = 0.60;  // Add borrower range end
+
+    // Borrower exit (random)
+    const BORROWER_EXIT_CHECK_INTERVAL = 5.0;  // seconds between checks
+    const BORROWER_EXIT_PROBABILITY = 0.15;    // 15% chance per check
+
+    // Lender random exit
+    const LENDER_EXIT_CHECK_INTERVAL = 5.0;  // seconds between checks
+    const LENDER_EXIT_PROBABILITY = 0.15;    // 15% chance per check
+
+    // ===== BORROWERS (dynamic) =====
+    let borrowers = [
+      { ownCapacity: 30, maxCredit: 30, credit: 0, debt: 0, phase: 0, targetDebt: 0, targetCredit: 0, flowState: 'idle', state: 'active', opacity: 1 },
+      { ownCapacity: 50, maxCredit: 30, credit: 0, debt: 0, phase: Math.PI * 2/3, targetDebt: 0, targetCredit: 0, flowState: 'idle', state: 'active', opacity: 1 },
+      { ownCapacity: 70, maxCredit: 30, credit: 0, debt: 0, phase: Math.PI * 4/3, targetDebt: 0, targetCredit: 0, flowState: 'idle', state: 'active', opacity: 1 },
+    ];
+
+    // ===== CREDIT VAULT =====
+    let cvLevel = 0;
+    let CV_CAPACITY = TOTAL_LENDER_CAPACITY;
+    const CV_MIN_RESERVE = 10;
+
+    // ===== LAYOUT (dynamic) =====
+    const boxW = 80;
+    const boxH = 140;
+    const lenderBoxH = 80;  // shorter height for credit-delegators (reduced)
+    const barW = 40;
+    const barGap = 8;
+    const maxPinkH = 100;
+
+    function getLayout() {
+      const rect = svg.getBoundingClientRect();
+      const svgW = rect.width;
+      const svgH = rect.height;
+
+      const centerX = svgW / 2;
+
+      // Dynamic lender positions based on visible lenders
+      const visibleLenders = lenders.filter(l => l.opacity > 0);
+      const lenderSpacing = Math.min(150, svgW * 0.12);
+      const lenderXs = visibleLenders.map((_, i, arr) => {
+        if (arr.length === 1) return centerX;
+        const offset = (i - (arr.length - 1) / 2) * lenderSpacing;
+        return centerX + offset;
+      });
+
+      // Dynamic borrower positions based on visible borrowers
+      const visibleBorrowers = borrowers.filter(b => b.opacity > 0);
+      const borrowerSpacing = Math.min(280, svgW * 0.22);
+      const borrowerXs = visibleBorrowers.map((_, i, arr) => {
+        if (arr.length === 1) return centerX;
+        const offset = (i - (arr.length - 1) / 2) * borrowerSpacing;
+        return centerX + offset;
+      });
+
+      return {
+        svgW,
+        svgH,
+        centerX,
+        lenderY: svgH * 0.12,
+        cvY: svgH * 0.40,
+        borrowerY: svgH * 0.85,
+        lenderXs,
+        cvX: centerX,
+        borrowerXs
+      };
+    }
+
+    // Colors
+    const DARK_GREEN = '#2a5a3a';    // Credit-delegator & borrower own capacity
+    const CREDIT_GREEN = '#4ae88a';  // Credit (CV, delegated credit, forward particles) - glowy
+    const RETURN_GREEN = '#7effa8';  // Return flow particles (lighter)
+    const RED = '#8b3a3a';
+
+    // ===== TIMING =====
+    const CYCLE_SPEED = 0.5;
+    const DEBT_SPEED = 3.0;
+    const CREDIT_SPEED = 2.5;
+    const SPAWN_INTERVAL = 0.15;  // 20% less frequent
+    const PARTICLE_SPEED = 0.015;  // slower particle flow
+
+    // LED colors
+    const LED_RED = '#ff4444';
+    const LED_GREEN = '#44ff44';
+
+    // ===== ANIMATION STATE =====
+    let animationTime = 0;
+    let particles = [];
+    let spawnTimer = 0;
+
+    // ===== HELPER =====
+    function sum(arr) {
+      return arr.reduce((a, b) => a + b, 0);
+    }
+
+    function easeInOutQuad(t) {
+      return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    }
+
+    // ===== DYNAMIC LENDER FUNCTIONS =====
+    function addLender() {
+      if (lenders.length >= MAX_LENDERS) return;
+      const capacity = 30 + Math.floor(Math.random() * 40);  // 30-70 capacity
+      lenders.push({
+        capacity: capacity,
+        level: capacity,  // Start FULL with credit
+        delegated: 0,     // Will delegate to CV over time
+        withdrawing: 0,
+        state: 'entering',
+        opacity: 0
+      });
+    }
+
+    function requestWithdrawal(lenderIdx) {
+      const l = lenders[lenderIdx];
+      if (!l || l.state !== 'active') return;
+      l.withdrawing = l.delegated;
+      l.state = 'withdrawing';
+    }
+
+    function requestLastWithdrawal() {
+      const activeIndices = lenders.map((l, i) => l.state === 'active' ? i : -1).filter(i => i >= 0);
+      if (activeIndices.length > MIN_LENDERS) {
+        requestWithdrawal(activeIndices[activeIndices.length - 1]);
+      }
+    }
+
+    // ===== DYNAMIC BORROWER FUNCTIONS =====
+    function addBorrower() {
+      if (borrowers.length >= MAX_BORROWERS) return;
+      borrowers.push({
+        ownCapacity: 30 + Math.floor(Math.random() * 40),  // 30-70 random
+        maxCredit: 30,
+        credit: 0,
+        debt: 0,
+        phase: Math.random() * Math.PI * 2,  // Random phase for variety
+        targetDebt: 0,
+        targetCredit: 0,
+        flowState: 'idle',
+        state: 'entering',
+        opacity: 0
+      });
+    }
+
+    function removeBorrower(idx) {
+      if (borrowers.length <= MIN_BORROWERS) return;
+      const b = borrowers[idx];
+      if (b && b.state === 'active') {
+        // Start repaying - debt flows to 0, then borrower exits
+        b.state = 'repaying';
+        b.targetCredit = 0;
+        b.targetDebt = 0;
+      }
+    }
+
+    let borrowerExitTimer = 0;
+    let lenderExitTimer = 0;
+
+    function processBorrowerDynamics(dt, utilization) {
+      const activeBorrowers = borrowers.filter(b => b.state === 'active');
+
+      // MIDDLE utilization (40-60%) - add borrower (capacity attracts demand)
+      if (utilization > UTIL_MID_LOW && utilization < UTIL_MID_HIGH && borrowers.length < MAX_BORROWERS) {
+        const anyEntering = borrowers.some(b => b.state === 'entering');
+        if (!anyEntering) {
+          addBorrower();
+        }
+      }
+
+      // Random exit timer (loan repayment)
+      borrowerExitTimer += dt;
+      if (borrowerExitTimer >= BORROWER_EXIT_CHECK_INTERVAL) {
+        borrowerExitTimer = 0;
+
+        // Random chance for one borrower to exit
+        if (activeBorrowers.length > MIN_BORROWERS && Math.random() < BORROWER_EXIT_PROBABILITY) {
+          const idx = Math.floor(Math.random() * activeBorrowers.length);
+          const borrowerIdx = borrowers.indexOf(activeBorrowers[idx]);
+          removeBorrower(borrowerIdx);
+        }
+      }
+
+      // Process fade animations for borrowers
+      for (const b of borrowers) {
+        if (b.state === 'entering') {
+          b.opacity = Math.min(1, (b.opacity || 0) + FADE_SPEED * dt);
+          if (b.opacity >= 1) b.state = 'active';
+        } else if (b.state === 'repaying') {
+          // Wait for debt to reach ~0, then delay for particles to arrive
+          if (b.debt < 1 && b.credit < 1) {
+            if (b.exitDelay === undefined) {
+              b.exitDelay = 0.6;  // wait for particles to arrive
+            }
+            b.exitDelay -= dt;
+            if (b.exitDelay <= 0) {
+              b.state = 'removing';  // mark for removal
+            }
+          }
+        }
+      }
+
+      // Remove borrowers marked for removal
+      for (let i = borrowers.length - 1; i >= 0; i--) {
+        if (borrowers[i].state === 'removing') {
+          borrowers.splice(i, 1);
+        }
+      }
+    }
+
+    function processWithdrawals(dt) {
+      const totalDelegated = sum(lenders.map(l => l.delegated));
+      const totalUsed = sum(borrowers.map(b => b.credit));
+      const available = Math.max(0, totalDelegated - totalUsed - CV_MIN_RESERVE);
+
+      // Calculate utilization (returned for use by other functions)
+      const utilization = totalDelegated > 0 ? totalUsed / totalDelegated : 0;
+      const anyWithdrawing = lenders.some(l => l.state === 'withdrawing');
+      const activeLenders = lenders.filter(l => l.state === 'active');
+
+      // LOW utilization (CV full, credit idle) = low yield, delegators withdraw
+      // Only trigger after system has stabilized (some credit has been delegated)
+      const minDelegatedForTrigger = 50;
+      if (utilization < UTIL_LOW && totalDelegated > minDelegatedForTrigger && !anyWithdrawing && activeLenders.length > MIN_LENDERS) {
+        const randomIdx = Math.floor(Math.random() * activeLenders.length);
+        const lenderToExit = activeLenders[randomIdx];
+        if (lenderToExit) {
+          lenderToExit.withdrawing = lenderToExit.delegated;
+          lenderToExit.state = 'withdrawing';
+        }
+      }
+
+      // HIGH utilization (CV nearly empty, credit being used) = high yield, attracts new lenders
+      if (utilization > UTIL_HIGH && lenders.length < MAX_LENDERS) {
+        const anyEntering = lenders.some(l => l.state === 'entering');
+        if (!anyEntering) {
+          addLender();  // New delegator comes in for high yield
+        }
+      }
+
+      // Random lender exit timer (independent of utilization - simulates natural churn)
+      lenderExitTimer += dt;
+      if (lenderExitTimer >= LENDER_EXIT_CHECK_INTERVAL) {
+        lenderExitTimer = 0;
+
+        // Random chance for one lender to withdraw (if not already withdrawing)
+        if (activeLenders.length > MIN_LENDERS && !anyWithdrawing && Math.random() < LENDER_EXIT_PROBABILITY) {
+          const randomIdx = Math.floor(Math.random() * activeLenders.length);
+          const lender = activeLenders[randomIdx];
+          lender.withdrawing = lender.delegated;
+          lender.state = 'withdrawing';
+        }
+      }
+
+      for (const l of lenders) {
+        if (l.state === 'withdrawing') {
+          // Try to withdraw if there's credit to withdraw
+          if (l.withdrawing > 0) {
+            const canWithdraw = Math.min(l.withdrawing, available, WITHDRAW_SPEED * dt);
+
+            if (canWithdraw > 0.01) {
+              l.delegated -= canWithdraw;
+              l.withdrawing -= canWithdraw;
+              l.level += canWithdraw;  // credit goes back to delegator
+
+              // Spawn particle for withdrawal (CV -> Delegator)
+              const lenderIdx = lenders.filter(x => x.opacity > 0).indexOf(l);
+              if (lenderIdx >= 0 && Math.random() < 0.3) {  // throttle particles
+                spawnParticle('cv-to-lender', lenderIdx, 0);
+              }
+            }
+          }
+
+          // Start/continue exit timer (whether withdrawal complete or stuck)
+          if (l.exitDelay === undefined) {
+            l.exitDelay = l.delegated < 0.1 ? 0 : 3.0;  // instant if done, longer if stuck
+          }
+          l.exitDelay -= dt;
+          if (l.exitDelay <= 0) {
+            l.state = 'removing';
+            l.withdrawing = 0;
+          }
+        }
+      }
+
+      return utilization;  // Return for use by other functions
+    }
+
+    function recalculateTotalCapacity() {
+      // Total capacity = all delegated credit (what's in the CV system)
+      TOTAL_LENDER_CAPACITY = sum(lenders.map(l => l.delegated));
+      CV_CAPACITY = TOTAL_LENDER_CAPACITY;
+    }
+
+    // Process delegation: delegators send credit to CV
+    let delegationSpawnTimer = 0;
+    function processDelegation(dt) {
+      delegationSpawnTimer += dt;
+
+      for (let i = 0; i < lenders.length; i++) {
+        const l = lenders[i];
+        if ((l.state === 'active' || l.state === 'entering') && l.level > 0) {
+          // Delegator has credit to delegate
+          const canDelegate = Math.min(l.level, DELEGATE_SPEED * dt);
+          if (canDelegate > 0.01) {
+            l.level -= canDelegate;
+            l.delegated += canDelegate;
+
+            // Spawn particle for delegation flow (throttled)
+            if (delegationSpawnTimer >= SPAWN_INTERVAL) {
+              const visibleIdx = lenders.filter((x, idx) => idx < i && x.opacity > 0).length;
+              spawnParticle('lender-to-cv', visibleIdx, 0);
+            }
+          }
+        }
+      }
+
+      if (delegationSpawnTimer >= SPAWN_INTERVAL) {
+        delegationSpawnTimer = 0;
+      }
+
+      recalculateTotalCapacity();
+    }
+
+    // ===== PARTICLE SYSTEM =====
+    const MAX_PARTICLES = 50;  // Limit to prevent slowdown
+
+    function spawnParticle(route, lenderIdx = 0, borrowerIdx = 0) {
+      if (particles.length >= MAX_PARTICLES) return;  // Don't spawn if too many
+      particles.push({
+        progress: 0,
+        speed: PARTICLE_SPEED + Math.random() * 0.005,
+        radius: 4,  // 20% smaller
+        route,
+        lenderIdx,
+        borrowerIdx
+      });
+    }
+
+    // Returns array of waypoints for orthogonal particle paths
+    function getPathForParticle(p, layout) {
+      const { lenderY, cvY, borrowerY, lenderXs, cvX, borrowerXs } = layout;
+      const outerPad = 6;
+      const lenderCvMidY = (lenderY + lenderBoxH + cvY) / 2;
+      const cvBottom = cvY + boxH;
+      const borrowerTop = borrowerY - boxH - maxPinkH - outerPad;
+      const cvBorrowerMidY = (cvBottom + borrowerTop) / 2;
+
+      switch(p.route) {
+        case 'lender-to-cv': {
+          const lx = lenderXs[p.lenderIdx] ?? cvX;  // fallback to center if lender gone
+          return [
+            { x: lx, y: lenderY + lenderBoxH },
+            { x: lx, y: lenderCvMidY },
+            { x: cvX, y: lenderCvMidY },
+            { x: cvX, y: cvY }
+          ];
+        }
+        case 'cv-to-lender': {
+          const lx = lenderXs[p.lenderIdx] ?? cvX;
+          return [
+            { x: cvX, y: cvY },
+            { x: cvX, y: lenderCvMidY },
+            { x: lx, y: lenderCvMidY },
+            { x: lx, y: lenderY + lenderBoxH }
+          ];
+        }
+        case 'cv-to-borrower': {
+          const bx = borrowerXs[p.borrowerIdx] ?? cvX;
+          // Check if borrower is at center (straight path) or sides (L-shaped)
+          const isCenter = Math.abs(bx - cvX) < 10;
+          if (isCenter) {
+            // Center borrower: straight down
+            return [
+              { x: cvX, y: cvBottom },
+              { x: bx, y: borrowerTop }
+            ];
+          } else {
+            // Side borrowers: L-shaped
+            return [
+              { x: cvX, y: cvBottom },
+              { x: cvX, y: cvBorrowerMidY },
+              { x: bx, y: cvBorrowerMidY },
+              { x: bx, y: borrowerTop }
+            ];
+          }
+        }
+        case 'borrower-to-cv': {
+          const bx = borrowerXs[p.borrowerIdx] ?? cvX;
+          const isCenter = Math.abs(bx - cvX) < 10;
+          if (isCenter) {
+            return [
+              { x: bx, y: borrowerTop },
+              { x: cvX, y: cvBottom }
+            ];
+          } else {
+            return [
+              { x: bx, y: borrowerTop },
+              { x: bx, y: cvBorrowerMidY },
+              { x: cvX, y: cvBorrowerMidY },
+              { x: cvX, y: cvBottom }
+            ];
+          }
+        }
+        default:
+          return [{ x: cvX, y: cvY }, { x: cvX, y: cvY }];
+      }
+    }
+
+    // Interpolate along multi-segment path
+    function getPointOnPath(waypoints, t) {
+      if (waypoints.length < 2) return waypoints[0];
+
+      // Calculate total path length
+      let totalLen = 0;
+      const segLens = [];
+      for (let i = 0; i < waypoints.length - 1; i++) {
+        const dx = waypoints[i + 1].x - waypoints[i].x;
+        const dy = waypoints[i + 1].y - waypoints[i].y;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        segLens.push(len);
+        totalLen += len;
+      }
+
+      // Find which segment we're on
+      const targetDist = t * totalLen;
+      let accumulated = 0;
+      for (let i = 0; i < segLens.length; i++) {
+        if (accumulated + segLens[i] >= targetDist) {
+          const segT = (targetDist - accumulated) / segLens[i];
+          return {
+            x: waypoints[i].x + (waypoints[i + 1].x - waypoints[i].x) * segT,
+            y: waypoints[i].y + (waypoints[i + 1].y - waypoints[i].y) * segT
+          };
+        }
+        accumulated += segLens[i];
+      }
+
+      // Return last point if we're past the end
+      return waypoints[waypoints.length - 1];
+    }
+
+    // ===== RENDER =====
+    function render() {
+      svg.innerHTML = '';
+      const pad = 4;
+      const layout = getLayout();
+      const { lenderY, cvY, borrowerY, lenderXs, cvX, borrowerXs, centerX } = layout;
+
+      // ----- FLOW LINES (orthogonal) -----
+      const linesG = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+      const outerPad = 6;
+
+      function drawLine(x1, y1, x2, y2, lineClass = 'flow-line') {
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', x1);
+        line.setAttribute('y1', y1);
+        line.setAttribute('x2', x2);
+        line.setAttribute('y2', y2);
+        line.setAttribute('class', lineClass);
+        line.setAttribute('stroke-width', 2);
+        linesG.appendChild(line);
+      }
+
+      // Lenders to CV: L-shaped paths (dynamic based on visible lenders)
+      const lenderCvMidY = (lenderY + lenderBoxH + cvY) / 2;
+      for (let i = 0; i < lenderXs.length; i++) {
+        const lx = lenderXs[i];
+        if (lx === undefined) continue;
+        // Vertical down from lender
+        drawLine(lx, lenderY + lenderBoxH, lx, lenderCvMidY);
+        // Horizontal to CV X
+        drawLine(lx, lenderCvMidY, cvX, lenderCvMidY);
+      }
+      // Single vertical line down to CV (shared by all lenders)
+      if (lenderXs.length > 0) {
+        drawLine(cvX, lenderCvMidY, cvX, cvY);
+      }
+
+      // CV to Borrowers: L-shaped or straight
+      const cvBottom = cvY + boxH;
+      const borrowerTop = borrowerY - boxH - maxPinkH - outerPad;
+      const cvBorrowerMidY = (cvBottom + borrowerTop) / 2;
+
+      for (let i = 0; i < borrowerXs.length; i++) {
+        const bx = borrowerXs[i];
+        if (bx === undefined) continue;
+        const isCenter = Math.abs(bx - cvX) < 10;
+
+        if (isCenter) {
+          // Center borrower: straight line down
+          drawLine(cvX, cvBottom, bx, borrowerTop);
+        } else {
+          // Side borrowers: L-shaped
+          drawLine(cvX, cvBottom, cvX, cvBorrowerMidY);  // vertical from CV
+          drawLine(cvX, cvBorrowerMidY, bx, cvBorrowerMidY);  // horizontal to borrower X
+          drawLine(bx, cvBorrowerMidY, bx, borrowerTop);  // vertical down to borrower
+        }
+      }
+
+      // ----- PATH HIGHLIGHT with ARROW -----
+      function drawHighlightLine(x1, y1, x2, y2, color) {
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', x1);
+        line.setAttribute('y1', y1);
+        line.setAttribute('x2', x2);
+        line.setAttribute('y2', y2);
+        line.setAttribute('stroke', color);
+        line.setAttribute('stroke-width', 3);
+        line.setAttribute('filter', `drop-shadow(0 0 4px ${color})`);
+        linesG.appendChild(line);
+      }
+
+      // Draw arrow pointing in direction: 'up', 'down', 'left', 'right'
+      function drawArrow(x, y, direction, color) {
+        const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+        const size = 10;
+        let points;
+
+        switch(direction) {
+          case 'down':
+            points = `${x},${y + size} ${x - size},${y - size} ${x + size},${y - size}`;
+            break;
+          case 'up':
+            points = `${x},${y - size} ${x - size},${y + size} ${x + size},${y + size}`;
+            break;
+          case 'left':
+            points = `${x - size},${y} ${x + size},${y - size} ${x + size},${y + size}`;
+            break;
+          case 'right':
+            points = `${x + size},${y} ${x - size},${y - size} ${x - size},${y + size}`;
+            break;
+        }
+
+        arrow.setAttribute('points', points);
+        arrow.setAttribute('fill', color);
+        arrow.setAttribute('filter', `drop-shadow(0 0 6px ${color}) drop-shadow(0 0 10px ${color})`);
+        linesG.appendChild(arrow);
+      }
+
+      // Use visible borrowers for highlights (matches layout) - only when running
+      const visibleBorrowersForHighlight = borrowers.filter(b => b.opacity > 0);
+      for (let i = 0; i < visibleBorrowersForHighlight.length; i++) {
+        const b = visibleBorrowersForHighlight[i];
+        // Highlight while actively flowing - only when running
+        if (isRunning && (b.flowState === 'pulling' || b.flowState === 'pushing')) {
+          const bx = borrowerXs[i];
+          if (bx === undefined) continue;
+          const isCenter = Math.abs(bx - cvX) < 10;
+          const color = b.flowState === 'pulling' ? LED_RED : LED_GREEN;
+
+          // Highlight CV to this borrower
+          if (isCenter) {
+            drawHighlightLine(cvX, cvBottom, bx, borrowerTop, color);
+          } else {
+            drawHighlightLine(cvX, cvBottom, cvX, cvBorrowerMidY, color);
+            drawHighlightLine(cvX, cvBorrowerMidY, bx, cvBorrowerMidY, color);
+            drawHighlightLine(bx, cvBorrowerMidY, bx, borrowerTop, color);
+          }
+
+          // Draw arrow at destination (tip exactly at box edge)
+          if (b.flowState === 'pulling') {
+            // Arrow pointing down toward borrower
+            drawArrow(bx, borrowerTop - 10, 'down', color);
+          } else {
+            // Arrow pointing up toward CV
+            drawArrow(cvX, cvBottom + 10, 'up', color);
+          }
+        }
+      }
+
+      // ----- DELEGATOR FLOW HIGHLIGHTS -----
+      const visibleLendersForHighlight = lenders.filter(l => l.opacity > 0);
+      for (let i = 0; i < visibleLendersForHighlight.length; i++) {
+        const l = visibleLendersForHighlight[i];
+        const lx = lenderXs[i];
+        if (lx === undefined) continue;
+
+        // Highlight when delegating (level > 0, credit flowing to CV) - only when running
+        const isDelegating = isRunning && (l.state === 'active' || l.state === 'entering') && l.level > 0.5;
+        // Highlight when withdrawing - only when running
+        const isWithdrawing = isRunning && l.state === 'withdrawing' && l.withdrawing > 0;
+
+        if (isDelegating || isWithdrawing) {
+          const color = isWithdrawing ? LED_RED : LED_GREEN;
+
+          // Highlight lender to CV path
+          drawHighlightLine(lx, lenderY + lenderBoxH, lx, lenderCvMidY, color);
+          drawHighlightLine(lx, lenderCvMidY, cvX, lenderCvMidY, color);
+          drawHighlightLine(cvX, lenderCvMidY, cvX, cvY, color);
+
+          // Arrow (tip exactly at box edge)
+          if (isDelegating) {
+            drawArrow(cvX, cvY - 10, 'down', color);  // Arrow pointing into CV
+          } else {
+            drawArrow(lx, lenderY + lenderBoxH + 10, 'up', color);  // Arrow pointing back to lender
+          }
+        }
+      }
+
+      // ----- PARTICLES -----
+      particles.forEach(p => {
+        if (p.progress < 0 || p.progress > 1) return;
+        const path = getPathForParticle(p, layout);
+        const easedT = easeInOutQuad(p.progress);
+        const pos = getPointOnPath(path, easedT);
+
+        // Red for pulling/withdrawing flows, green for delegating/returning
+        const isRedFlow = p.route === 'cv-to-borrower' || p.route === 'cv-to-lender';
+        const particleColor = isRedFlow ? LED_RED : CREDIT_GREEN;
+
+        const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        circle.setAttribute('cx', pos.x);
+        circle.setAttribute('cy', pos.y);
+        circle.setAttribute('r', p.radius);
+        circle.setAttribute('fill', particleColor);
+        circle.setAttribute('filter', `drop-shadow(0 0 6px ${particleColor}) drop-shadow(0 0 12px ${particleColor})`);
+        linesG.appendChild(circle);
+      });
+
+      svg.appendChild(linesG);
+
+      // ----- LEGEND (left side, aligned with BORROWERS) -----
+      const legendX = 30;
+      const legendY = borrowerY - (boxH + maxPinkH)/2 - 40;  // aligned with borrowers
+      const legendG = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+
+      function addLegendItem(color, label, yOffset) {
+        const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        rect.setAttribute('x', legendX);
+        rect.setAttribute('y', legendY + yOffset);
+        rect.setAttribute('width', 20);
+        rect.setAttribute('height', 15);
+        rect.setAttribute('fill', color);
+        rect.setAttribute('stroke', '#6b8e23');
+        rect.setAttribute('stroke-width', 1);
+        legendG.appendChild(rect);
+
+        const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        text.setAttribute('x', legendX + 28);
+        text.setAttribute('y', legendY + yOffset + 12);
+        text.setAttribute('fill', '#9acd32');
+        text.setAttribute('font-size', '12px');
+        text.setAttribute('font-family', 'Courier New, monospace');
+        text.textContent = label;
+        legendG.appendChild(text);
+      }
+
+      // Liquidation line in legend (first item)
+      const liqLegendLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      liqLegendLine.setAttribute('x1', legendX);
+      liqLegendLine.setAttribute('y1', legendY + 8);
+      liqLegendLine.setAttribute('x2', legendX + 20);
+      liqLegendLine.setAttribute('y2', legendY + 8);
+      liqLegendLine.setAttribute('stroke', '#ff4444');
+      liqLegendLine.setAttribute('stroke-width', 2);
+      legendG.appendChild(liqLegendLine);
+
+      const liqLegendText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      liqLegendText.setAttribute('x', legendX + 28);
+      liqLegendText.setAttribute('y', legendY + 12);
+      liqLegendText.setAttribute('fill', '#9acd32');
+      liqLegendText.setAttribute('font-size', '12px');
+      liqLegendText.setAttribute('font-family', 'Courier New, monospace');
+      liqLegendText.textContent = 'Liquidation Threshold';
+      legendG.appendChild(liqLegendText);
+
+      addLegendItem(RED, 'Debt', 24);
+      addLegendItem(CREDIT_GREEN, 'Delegated Credit', 48);
+      addLegendItem(DARK_GREEN, 'User Borrowing Capacity', 72);
+
+      svg.appendChild(legendG);
+
+      // ----- LENDERS (Credit-Delegators) -----
+      const lenderBarW = barW;
+      const strokePadL = 3;
+
+      // Only render visible lenders
+      const visibleLenders = lenders.filter(l => l.opacity > 0);
+      for (let i = 0; i < visibleLenders.length; i++) {
+        const l = visibleLenders[i];
+        const x = lenderXs[i];
+        if (x === undefined) continue;  // safety check
+        const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        g.setAttribute('opacity', l.opacity);
+
+        // Border (shows full capacity area - unfilled portion can't be used)
+        const border = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        border.setAttribute('x', x - lenderBarW/2);
+        border.setAttribute('y', lenderY);
+        border.setAttribute('width', lenderBarW);
+        border.setAttribute('height', lenderBoxH);
+        border.setAttribute('fill', 'none');
+        border.setAttribute('stroke-width', 2);
+
+        // Blink effect when delegating or withdrawing (only when animation running)
+        const isDelegating = isRunning && (l.state === 'active' || l.state === 'entering') && l.level > 0.5;
+        const isWithdrawing = isRunning && l.state === 'withdrawing';
+        if (isDelegating || isWithdrawing) {
+          const flowColor = isWithdrawing ? LED_RED : LED_GREEN;
+          border.setAttribute('stroke', flowColor);
+          border.setAttribute('filter', `drop-shadow(0 0 6px ${flowColor}) drop-shadow(0 0 10px ${flowColor})`);
+        } else {
+          border.setAttribute('stroke', '#6b8e23');
+        }
+        g.appendChild(border);
+
+        // "Coll" label above the lender box
+        const lenderCollLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        lenderCollLabel.setAttribute('x', x);
+        lenderCollLabel.setAttribute('y', lenderY - 8);
+        lenderCollLabel.setAttribute('fill', '#9acd32');
+        lenderCollLabel.setAttribute('font-size', '9px');
+        lenderCollLabel.setAttribute('font-family', 'Courier New, monospace');
+        lenderCollLabel.setAttribute('text-anchor', 'middle');
+        lenderCollLabel.textContent = 'Coll';
+        g.appendChild(lenderCollLabel);
+
+        // Fill (current supply level, grows from bottom)
+        if (l.level > 0) {
+          const fillH = (l.level / l.capacity) * (lenderBoxH - strokePadL * 2);
+          const fill = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+          fill.setAttribute('x', x - lenderBarW/2 + strokePadL);
+          fill.setAttribute('y', lenderY + lenderBoxH - fillH - strokePadL);
+          fill.setAttribute('width', lenderBarW - strokePadL * 2);
+          fill.setAttribute('height', fillH);
+          fill.setAttribute('fill', DARK_GREEN);
+          g.appendChild(fill);
+        }
+
+        svg.appendChild(g);
+      }
+
+      // Calculate consistent label X position (right side, aligned)
+      const labelX = layout.svgW * 0.82;  // moved a bit to the left
+
+      // Connector line Y for delegators
+      const delegatorLineY = lenderY + lenderBoxH/2;
+
+      // Light line connecting rightmost delegator to label
+      if (lenderXs.length > 0) {
+        const rightmostLenderX = lenderXs[lenderXs.length - 1];
+        const connectorLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        connectorLine.setAttribute('x1', rightmostLenderX + barW/2 + 10);
+        connectorLine.setAttribute('y1', delegatorLineY);
+        connectorLine.setAttribute('x2', labelX + 210);
+        connectorLine.setAttribute('y2', delegatorLineY);
+        connectorLine.setAttribute('stroke', '#4a6a4a');
+        connectorLine.setAttribute('stroke-width', 1);
+        connectorLine.setAttribute('stroke-dasharray', '4,4');
+        connectorLine.setAttribute('opacity', 0.5);
+        svg.appendChild(connectorLine);
+      }
+
+      // Label above the dotted line, right-aligned with line end
+      const delegatorLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      delegatorLabel.setAttribute('x', labelX + 210);
+      delegatorLabel.setAttribute('y', delegatorLineY - 8);
+      delegatorLabel.setAttribute('fill', '#9acd32');
+      delegatorLabel.setAttribute('font-size', '18px');
+      delegatorLabel.setAttribute('font-family', 'Courier New, monospace');
+      delegatorLabel.setAttribute('text-anchor', 'end');
+      delegatorLabel.setAttribute('letter-spacing', '2px');
+      delegatorLabel.textContent = 'CREDIT-DELEGATORS';
+      svg.appendChild(delegatorLabel);
+
+      // ----- CREDIT VAULT -----
+      const cvG = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+
+      const cvBorder = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      cvBorder.setAttribute('x', cvX - boxW/2);
+      cvBorder.setAttribute('y', cvY);
+      cvBorder.setAttribute('width', boxW);
+      cvBorder.setAttribute('height', boxH);
+      cvBorder.setAttribute('fill', 'none');
+      cvBorder.setAttribute('stroke', '#6b8e23');
+      cvBorder.setAttribute('stroke-width', 2);
+      cvG.appendChild(cvBorder);
+
+      if (cvLevel > 0) {
+        const fillH = (cvLevel / CV_CAPACITY) * (boxH - pad);
+        const cvFill = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        cvFill.setAttribute('x', cvX - boxW/2 + pad);
+        cvFill.setAttribute('y', cvY + boxH - fillH - pad);
+        cvFill.setAttribute('width', boxW - pad*2);
+        cvFill.setAttribute('height', fillH);
+        cvFill.setAttribute('fill', CREDIT_GREEN);
+        cvFill.setAttribute('filter', 'drop-shadow(0 0 4px #4ae88a)');
+        cvG.appendChild(cvFill);
+      }
+
+      // Connector line Y for CV
+      const cvLineY = cvY + boxH/2;
+
+      // Light line connecting CV (right side) to label - extends to end of label
+      const cvConnectorLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      cvConnectorLine.setAttribute('x1', cvX + boxW/2 + 10);
+      cvConnectorLine.setAttribute('y1', cvLineY);
+      cvConnectorLine.setAttribute('x2', labelX + 160);
+      cvConnectorLine.setAttribute('y2', cvLineY);
+      cvConnectorLine.setAttribute('stroke', '#4a6a4a');
+      cvConnectorLine.setAttribute('stroke-width', 1);
+      cvConnectorLine.setAttribute('stroke-dasharray', '4,4');
+      cvConnectorLine.setAttribute('opacity', 0.5);
+      cvG.appendChild(cvConnectorLine);
+
+      // Label above the dotted line, right-aligned with line end
+      const cvLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      cvLabel.setAttribute('x', labelX + 160);
+      cvLabel.setAttribute('y', cvLineY - 8);
+      cvLabel.setAttribute('fill', '#9acd32');
+      cvLabel.setAttribute('font-size', '18px');
+      cvLabel.setAttribute('font-family', 'Courier New, monospace');
+      cvLabel.setAttribute('text-anchor', 'end');
+      cvLabel.setAttribute('letter-spacing', '2px');
+      cvLabel.textContent = 'CREDIT VAULT';
+      cvG.appendChild(cvLabel);
+
+      svg.appendChild(cvG);
+
+      // ----- BORROWERS -----
+      const visibleBorrowers = borrowers.filter(b => b.opacity > 0);
+      for (let i = 0; i < visibleBorrowers.length; i++) {
+        const b = visibleBorrowers[i];
+        const x = borrowerXs[i];
+        if (x === undefined) continue;  // safety check
+        const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        g.setAttribute('opacity', b.opacity ?? 1);
+
+        const greenH = boxH * (b.ownCapacity / 70);  // scale by ownCapacity (70 = full height)
+        // Scale credit visually consistent with CV (use same pixels-per-credit ratio)
+        const creditScale = CV_CAPACITY > 0 ? (boxH / CV_CAPACITY) : 1;
+        const pinkH = b.credit * creditScale;
+        const maxCapH = boxH + maxPinkH;  // outer box stays constant
+        const currentCapH = greenH + pinkH;
+        const totalCap = b.ownCapacity + b.credit;
+
+        const capX = x - barGap/2 - barW/2;
+        const debtX = x + barGap/2 + barW/2;
+        const strokePad = 3;
+        const outerPad = 6;
+
+        // Outer box (stays constant at max capacity, no scaling)
+        const outerCapH = maxCapH;
+        const outerX = capX - barW/2 - outerPad;
+        const outerW = (debtX + barW/2) - (capX - barW/2) + outerPad * 2;
+        const outerH = outerCapH + outerPad * 2;
+        const outer = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        outer.setAttribute('x', outerX);
+        outer.setAttribute('y', borrowerY - outerCapH - outerPad);
+        outer.setAttribute('width', outerW);
+        outer.setAttribute('height', outerH);
+        outer.setAttribute('fill', 'none');
+        outer.setAttribute('stroke-width', 2);
+
+        // Blink effect when flowing (only when animation running)
+        const isFlowing = isRunning && (b.flowState === 'pulling' || b.flowState === 'pushing');
+        if (isFlowing) {
+          const flowColor = b.flowState === 'pulling' ? LED_RED : LED_GREEN;
+          outer.setAttribute('stroke', flowColor);
+          outer.setAttribute('filter', `drop-shadow(0 0 6px ${flowColor}) drop-shadow(0 0 10px ${flowColor})`);
+        } else {
+          outer.setAttribute('stroke', '#6b8e23');
+        }
+        g.appendChild(outer);
+
+        // Capacity border (stays constant at maxCapH)
+        const capBorderH = maxCapH;
+        const capBorder = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        capBorder.setAttribute('x', capX - barW/2);
+        capBorder.setAttribute('y', borrowerY - capBorderH);
+        capBorder.setAttribute('width', barW);
+        capBorder.setAttribute('height', capBorderH);
+        capBorder.setAttribute('fill', 'none');
+        capBorder.setAttribute('stroke', '#6b8e23');
+        capBorder.setAttribute('stroke-width', 2);
+        g.appendChild(capBorder);
+
+        // Green fill (user's own capacity)
+        const greenFillH = greenH - strokePad;
+        const greenRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        greenRect.setAttribute('x', capX - barW/2 + strokePad);
+        greenRect.setAttribute('y', borrowerY - greenFillH - strokePad);
+        greenRect.setAttribute('width', barW - strokePad*2);
+        greenRect.setAttribute('height', greenFillH);
+        greenRect.setAttribute('fill', DARK_GREEN);
+        g.appendChild(greenRect);
+
+        // Delegated credit (glowy green, capped at 95% of total cap)
+        if (b.credit > 0 && pinkH > 0) {
+          const maxCreditPosition = maxCapH * 0.95;
+          const maxCreditH = Math.max(0, maxCreditPosition - greenH);
+          const cappedPinkH = Math.min(pinkH, maxCreditH);
+          const creditRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+          creditRect.setAttribute('x', capX - barW/2 + strokePad);
+          creditRect.setAttribute('y', borrowerY - greenH - cappedPinkH + strokePad);
+          creditRect.setAttribute('width', barW - strokePad*2);
+          creditRect.setAttribute('height', cappedPinkH);
+          creditRect.setAttribute('fill', CREDIT_GREEN);
+          creditRect.setAttribute('filter', 'drop-shadow(0 0 4px #4ae88a)');
+          g.appendChild(creditRect);
+        }
+
+        // Debt border (matches liquidation, capped at 95% of max)
+        const liqCapH = Math.min(currentCapH, maxCapH * 0.95);
+        const debtBorderH = liqCapH;
+        if (debtBorderH > 0) {
+          const debtBorder = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+          debtBorder.setAttribute('x', debtX - barW/2);
+          debtBorder.setAttribute('y', borrowerY - debtBorderH);
+          debtBorder.setAttribute('width', barW);
+          debtBorder.setAttribute('height', debtBorderH);
+          debtBorder.setAttribute('fill', 'none');
+          debtBorder.setAttribute('stroke', '#8b4513');
+          debtBorder.setAttribute('stroke-width', 2);
+          g.appendChild(debtBorder);
+        }
+
+        // Liquidation line (at current capacity, max 95% of total)
+        const liqY = borrowerY - liqCapH;
+        const liqLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        liqLine.setAttribute('x1', outerX);
+        liqLine.setAttribute('y1', liqY);
+        liqLine.setAttribute('x2', outerX + outerW);
+        liqLine.setAttribute('y2', liqY);
+        liqLine.setAttribute('stroke', '#ff4444');
+        liqLine.setAttribute('stroke-width', 2);
+        g.appendChild(liqLine);
+
+        // Debt stripes (capped at liquidation line)
+        const safeMaxDebt = totalCap * 0.95;
+        const cappedDebt = Math.min(b.debt, safeMaxDebt);
+        if (cappedDebt > 0 && totalCap > 0) {
+          const debtH = (cappedDebt / totalCap) * currentCapH;
+          const stripeH = 5;
+          const stripeGap = 2;
+          let curY = borrowerY - strokePad;
+          const debtTop = Math.max(borrowerY - debtH + strokePad, liqY);
+
+          while (curY > debtTop) {
+            const h = Math.min(stripeH, curY - debtTop);
+            if (h > 0) {
+              const stripe = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+              stripe.setAttribute('x', debtX - barW/2 + strokePad);
+              stripe.setAttribute('y', curY - h);
+              stripe.setAttribute('width', barW - strokePad*2);
+              stripe.setAttribute('height', h);
+              stripe.setAttribute('fill', RED);
+              g.appendChild(stripe);
+            }
+            curY -= (stripeH + stripeGap);
+          }
+        }
+
+        // Bar labels below borrower
+        const capLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        capLabel.setAttribute('x', capX);
+        capLabel.setAttribute('y', borrowerY + 18);
+        capLabel.setAttribute('class', 'bar-label');
+        capLabel.textContent = 'Coll';
+        g.appendChild(capLabel);
+
+        const debtLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        debtLabel.setAttribute('x', debtX);
+        debtLabel.setAttribute('y', borrowerY + 18);
+        debtLabel.setAttribute('class', 'bar-label');
+        debtLabel.textContent = 'Debt';
+        g.appendChild(debtLabel);
+
+        svg.appendChild(g);
+      }
+
+      // Connector line Y for borrowers
+      const borrowerLineY = borrowerY - (boxH + maxPinkH)/2;
+
+      // Light line connecting rightmost borrower to label - extends to end of label
+      if (borrowerXs.length > 0) {
+        const rightmostBorrowerX = borrowerXs[borrowerXs.length - 1];
+        const borrowerConnectorLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        borrowerConnectorLine.setAttribute('x1', rightmostBorrowerX + barGap/2 + barW + 6 + 10);
+        borrowerConnectorLine.setAttribute('y1', borrowerLineY);
+        borrowerConnectorLine.setAttribute('x2', labelX + 135);
+        borrowerConnectorLine.setAttribute('y2', borrowerLineY);
+        borrowerConnectorLine.setAttribute('stroke', '#4a6a4a');
+        borrowerConnectorLine.setAttribute('stroke-width', 1);
+        borrowerConnectorLine.setAttribute('stroke-dasharray', '4,4');
+        borrowerConnectorLine.setAttribute('opacity', 0.5);
+        svg.appendChild(borrowerConnectorLine);
+      }
+
+      // Label above the dotted line, right-aligned with line end
+      const borrowerLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      borrowerLabel.setAttribute('x', labelX + 135);
+      borrowerLabel.setAttribute('y', borrowerLineY - 8);
+      borrowerLabel.setAttribute('fill', '#9acd32');
+      borrowerLabel.setAttribute('font-size', '18px');
+      borrowerLabel.setAttribute('font-family', 'Courier New, monospace');
+      borrowerLabel.setAttribute('text-anchor', 'end');
+      borrowerLabel.setAttribute('letter-spacing', '2px');
+      borrowerLabel.textContent = 'BORROWERS';
+      svg.appendChild(borrowerLabel);
+    }
+
+    // ===== ANIMATION =====
+    let lastTime = performance.now();
+
+    function animate() {
+      const now = performance.now();
+      const rawDt = (now - lastTime) / 1000;
+      const dt = Math.min(rawDt, 0.05);  // Cap at 50ms to prevent slowdown spirals
+      lastTime = now;
+      animationTime += dt;
+
+      const t = animationTime * CYCLE_SPEED;
+
+      // ===== 1. CALCULATE CURRENT AVAILABLE CREDIT (fresh, not stale) =====
+      const totalDelegated = sum(lenders.map(l => l.delegated));
+      const totalBorrowedBefore = sum(borrowers.map(b => b.credit));
+      const currentAvailable = Math.max(0, totalDelegated - totalBorrowedBefore);
+
+      // ===== 2. CALCULATE TARGET STATES =====
+      let totalTargetCredit = 0;
+
+      for (let i = 0; i < borrowers.length; i++) {
+        const b = borrowers[i];
+
+        // Skip sine wave for repaying/removing borrowers - keep targets at 0
+        if (b.state === 'repaying' || b.state === 'removing') {
+          b.targetDebt = 0;
+          b.targetCredit = 0;
+          continue;
+        }
+
+        const bt = t + b.phase;
+
+        const debtMin = 5;
+        const debtMax = (b.ownCapacity + b.maxCredit) * 0.95;  // Cap at 95% of total capacity
+        b.targetDebt = debtMin + (debtMax - debtMin) * (0.5 + 0.5 * Math.sin(bt - Math.PI/2));
+
+        const threshold = b.ownCapacity * 0.6;
+        b.targetCredit = Math.min(b.maxCredit, Math.max(0, b.targetDebt - threshold) * 1.3);
+
+        totalTargetCredit += b.targetCredit;
+      }
+
+      // ===== 3. GLOBAL CONSTRAINT - Borrowers limited by available CV credit =====
+      // Use fresh currentAvailable calculated above (not stale cvLevel)
+      const availableForNew = currentAvailable;
+
+      // Total NEW credit wanted (beyond what they already have)
+      const totalNewWanted = sum(borrowers.map(b => Math.max(0, b.targetCredit - b.credit)));
+
+      if (totalNewWanted > availableForNew && totalNewWanted > 0) {
+        // Scale down requests proportionally
+        const scale = availableForNew / totalNewWanted;
+        for (const b of borrowers) {
+          const newWanted = Math.max(0, b.targetCredit - b.credit);
+          b.targetCredit = b.credit + newWanted * scale;
+        }
+      }
+
+      // ===== 4. UPDATE STATES (INV-1, INV-2, INV-3) =====
+      for (const b of borrowers) {
+        const totalCap = b.ownCapacity + b.credit;
+        const safeMaxDebt = totalCap * 0.90;
+        const cappedDebt = Math.min(b.targetDebt, safeMaxDebt);
+
+        b.debt += (cappedDebt - b.debt) * DEBT_SPEED * dt;
+        b.debt = Math.max(0, b.debt);
+
+        b.credit += (b.targetCredit - b.credit) * CREDIT_SPEED * dt;
+        b.credit = Math.max(0, Math.min(b.maxCredit, b.credit));
+
+        // Update flow state based on credit movement
+        const flowDiff = b.targetCredit - b.credit;
+        if (flowDiff > 0.5) {
+          b.flowState = 'pulling';
+        } else if (flowDiff < -0.5) {
+          b.flowState = 'pushing';
+        } else {
+          b.flowState = 'idle';
+        }
+      }
+
+      // ===== 4.5 HARD ENFORCEMENT - ensure conservation =====
+      const totalBorrowedNow = sum(borrowers.map(b => b.credit));
+      const totalDelegatedNow = sum(lenders.map(l => l.delegated));
+      if (totalBorrowedNow > totalDelegatedNow && totalBorrowedNow > 0) {
+        const scale = totalDelegatedNow / totalBorrowedNow;
+        for (const b of borrowers) {
+          b.credit *= scale;
+        }
+      }
+
+      // ===== 5. PROCESS LENDER DYNAMICS =====
+      // Process delegation (delegators send credit to CV)
+      processDelegation(dt);
+
+      // Process withdrawals and get utilization
+      const utilization = processWithdrawals(dt);
+
+      // ===== 6. PROCESS BORROWER DYNAMICS =====
+      processBorrowerDynamics(dt, utilization);
+
+      // Fade in for entering lenders
+      for (const l of lenders) {
+        if (l.state === 'entering') {
+          l.opacity = Math.min(1, l.opacity + FADE_SPEED * dt);
+          if (l.opacity >= 1) l.state = 'active';
+        }
+      }
+
+      // Remove lenders marked for removal
+      lenders = lenders.filter(l => l.state !== 'removing');
+
+      // Recalculate capacity after changes
+      recalculateTotalCapacity();
+
+      // ===== 7. DERIVE CV LEVEL (Conservation) =====
+      // CV level = total delegated - total borrowed (what's available)
+      const finalDelegated = sum(lenders.map(l => l.delegated));
+      const finalBorrowed = sum(borrowers.map(b => b.credit));
+      cvLevel = finalDelegated - finalBorrowed;
+      // Conservation check - should never be negative after hard enforcement
+      if (cvLevel < 0) {
+        // Conservation violation - silently fix to avoid console spam
+        cvLevel = 0;
+      }
+
+      // ===== 8. SPAWN PARTICLES =====
+      spawnTimer += dt;
+      if (spawnTimer >= SPAWN_INTERVAL) {
+        spawnTimer = 0;
+
+        // Find borrowers needing credit (forward) or returning (reverse)
+        // Use visible index for particle routing (matches layout)
+        const visibleBorrowers = borrowers.filter(b => b.opacity > 0);
+        for (let visibleIdx = 0; visibleIdx < visibleBorrowers.length; visibleIdx++) {
+          const b = visibleBorrowers[visibleIdx];
+          if (b.targetCredit > b.credit + 1) {
+            // Forward: CV -> Borrower (credit is already in CV from delegation)
+            spawnParticle('cv-to-borrower', 0, visibleIdx);
+          } else if (b.targetCredit < b.credit - 1) {
+            // Reverse: Borrower -> CV
+            spawnParticle('borrower-to-cv', 0, visibleIdx);
+          }
+        }
+      }
+
+      // ===== 9. UPDATE PARTICLES =====
+      const arrived = [];
+      particles.forEach((p, idx) => {
+        p.progress += p.speed;
+        if (p.progress >= 1) arrived.push(idx);
+      });
+
+      for (let i = arrived.length - 1; i >= 0; i--) {
+        particles.splice(arrived[i], 1);
+      }
+
+      render();
+      requestAnimationFrame(animate);
+    }
+
+    function startAnimation() {
+      if (!isRunning) {
+        isRunning = true;
+        document.getElementById('playBtn').style.display = 'none';
+        lastTime = performance.now();
+        animate();
+      }
+    }
+
+    render();
+    // Animation starts when play button is clicked
+  </script>
+</body>
+</html>
